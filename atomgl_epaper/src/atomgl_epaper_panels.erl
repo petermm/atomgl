@@ -11,7 +11,8 @@
     acep7_panel/2,
     jd79656_panel/2,
     ssd16xx_panel/2,
-    uc8151_panel/2
+    uc8151_panel/2,
+    uc8276_panel/2
 ]).
 
 -import(atomgl_epaper_program, [
@@ -115,6 +116,27 @@ panel("waveshare,epd2in13_V4-fast", Opts) ->
     panel("waveshare,epd2in13_V4", maps:merge(#{default_refresh => fast}, Opts));
 panel("waveshare,epd2in13_V4-partial", Opts) ->
     panel("waveshare,epd2in13_V4", maps:merge(#{default_refresh => partial}, Opts));
+panel("waveshare,epd4in2_V2", Opts) ->
+    uc8276_panel("Waveshare epd4in2_V2 4.2\" e-paper UC8276 v1", maps:merge(#{
+        native_width => 400,
+        native_height => 300,
+        palette_size => 4,
+        refresh_modes => [full, fast, partial, '4gray'],
+        default_refresh => full,
+        init => uc8276_init(),
+        full => uc8276_refresh(uc8276_mono_prelude(), 16#F7),
+        fast => uc8276_refresh(uc8276_fast_prelude(16#6E), 16#C7),
+        partial => uc8276_partial_refresh(),
+        '4gray' => uc8276_4gray_refresh(),
+        sleep => cmd(16#10, <<16#01>>),
+        lut_4gray => uc8276_4gray_lut()
+    }, Opts));
+panel("waveshare,epd4in2_V2-fast", Opts) ->
+    panel("waveshare,epd4in2_V2", maps:merge(#{default_refresh => fast}, Opts));
+panel("waveshare,epd4in2_V2-partial", Opts) ->
+    panel("waveshare,epd4in2_V2", maps:merge(#{default_refresh => partial}, Opts));
+panel("waveshare,epd4in2_V2-4gray", Opts) ->
+    panel("waveshare,epd4in2_V2", maps:merge(#{default_refresh => '4gray'}, Opts));
 panel("heltec,lcmen2r13efc1", Opts) ->
     jd79656_panel("Heltec LCMEN2R13EFC1 2.13\" e-paper JD79656 v1", maps:merge(#{
         native_width => 122,
@@ -210,6 +232,95 @@ uc8151_cursor() ->
         cmd(16#4E, <<16#00>>),
         cmd(16#4F, <<16#00, 16#00>>)
     ].
+
+uc8276_init() ->
+    program([
+        reset(100, 2, 100),
+        wait_busy(0, 5000),
+        cmd(16#12),
+        wait_busy(0, 5000),
+        uc8276_mono_prelude(),
+        wait_busy(0, 5000)
+    ]).
+
+uc8276_mono_prelude() ->
+    [
+        cmd(16#21, <<16#40, 16#00>>),
+        cmd(16#3C, <<16#05>>),
+        cmd(16#11, <<16#03>>),
+        uc8276_window(),
+        uc8276_cursor()
+    ].
+
+uc8276_fast_prelude(Temperature) ->
+    [
+        cmd(16#21, <<16#40, 16#00>>),
+        cmd(16#3C, <<16#05>>),
+        cmd(16#1A, <<Temperature>>),
+        cmd(16#22, <<16#91>>),
+        cmd(16#20),
+        wait_busy(0, 5000),
+        cmd(16#11, <<16#03>>),
+        uc8276_window(),
+        uc8276_cursor()
+    ].
+
+uc8276_refresh(Prelude, UpdateMode) ->
+    program([
+        Prelude,
+        cmd(16#24),
+        capture_frame(),
+        insert_plane(0),
+        cmd(16#26),
+        insert_prev_frame(0),
+        cmd(16#22, <<UpdateMode>>),
+        cmd(16#20),
+        wait_busy(0, 5000),
+        mark_prev_valid()
+    ]).
+
+uc8276_partial_refresh() ->
+    program([
+        cmd(16#3C, <<16#80>>),
+        cmd(16#21, <<16#00, 16#00>>),
+        cmd(16#3C, <<16#80>>),
+        uc8276_window(),
+        uc8276_cursor(),
+        cmd(16#24),
+        capture_frame(),
+        insert_plane(0),
+        cmd(16#22, <<16#FF>>),
+        cmd(16#20),
+        wait_busy(0, 5000),
+        mark_prev_valid()
+    ]).
+
+uc8276_4gray_refresh() ->
+    program([
+        reset(100, 2, 100),
+        cmd(16#12),
+        wait_busy(0, 5000),
+        cmd(16#21, <<16#00, 16#00>>),
+        cmd(16#3C, <<16#03>>),
+        cmd(16#0C, <<16#8B, 16#9C, 16#A4, 16#0F>>),
+        insert_lut(?LUT_4GRAY),
+        cmd(16#11, <<16#03>>),
+        uc8276_window(),
+        uc8276_cursor(),
+        cmd(16#24),
+        insert_plane(0),
+        cmd(16#26),
+        insert_plane(1),
+        cmd(16#22, <<16#CF>>),
+        cmd(16#20),
+        wait_busy(0, 5000)
+    ]).
+
+uc8276_window() ->
+    [cmd(16#44, <<16#00, 16#31>>), cmd(16#45, <<16#00, 16#00, 16#2B, 16#01>>)].
+
+uc8276_cursor() ->
+    [cmd(16#4E, <<16#00>>), cmd(16#4F, <<16#00, 16#00>>)].
 
 ssd1680_2in9_init() ->
     program([
@@ -505,6 +616,44 @@ uc8151_2in13_partial_lut() ->
         16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00,
         16#0F, 16#01, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00,
         16#00, 16#00, 16#00, 16#00, 16#00, 16#00
+    >>.
+
+uc8276_4gray_lut() ->
+    <<
+        16#01, 16#0A, 16#1B, 16#0F, 16#03, 16#01, 16#01,
+        16#05, 16#0A, 16#01, 16#0A, 16#01, 16#01, 16#01,
+        16#05, 16#08, 16#03, 16#02, 16#04, 16#01, 16#01,
+        16#01, 16#04, 16#04, 16#02, 16#00, 16#01, 16#01,
+        16#01, 16#00, 16#00, 16#00, 16#00, 16#01, 16#01,
+        16#01, 16#00, 16#00, 16#00, 16#00, 16#01, 16#01,
+        16#01, 16#0A, 16#1B, 16#0F, 16#03, 16#01, 16#01,
+        16#05, 16#4A, 16#01, 16#8A, 16#01, 16#01, 16#01,
+        16#05, 16#48, 16#03, 16#82, 16#84, 16#01, 16#01,
+        16#01, 16#84, 16#84, 16#82, 16#00, 16#01, 16#01,
+        16#01, 16#00, 16#00, 16#00, 16#00, 16#01, 16#01,
+        16#01, 16#00, 16#00, 16#00, 16#00, 16#01, 16#01,
+        16#01, 16#0A, 16#1B, 16#8F, 16#03, 16#01, 16#01,
+        16#05, 16#4A, 16#01, 16#8A, 16#01, 16#01, 16#01,
+        16#05, 16#48, 16#83, 16#82, 16#04, 16#01, 16#01,
+        16#01, 16#04, 16#04, 16#02, 16#00, 16#01, 16#01,
+        16#01, 16#00, 16#00, 16#00, 16#00, 16#01, 16#01,
+        16#01, 16#00, 16#00, 16#00, 16#00, 16#01, 16#01,
+        16#01, 16#8A, 16#1B, 16#8F, 16#03, 16#01, 16#01,
+        16#05, 16#4A, 16#01, 16#8A, 16#01, 16#01, 16#01,
+        16#05, 16#48, 16#83, 16#02, 16#04, 16#01, 16#01,
+        16#01, 16#04, 16#04, 16#02, 16#00, 16#01, 16#01,
+        16#01, 16#00, 16#00, 16#00, 16#00, 16#01, 16#01,
+        16#01, 16#00, 16#00, 16#00, 16#00, 16#01, 16#01,
+        16#01, 16#8A, 16#9B, 16#8F, 16#03, 16#01, 16#01,
+        16#05, 16#4A, 16#01, 16#8A, 16#01, 16#01, 16#01,
+        16#05, 16#48, 16#03, 16#42, 16#04, 16#01, 16#01,
+        16#01, 16#04, 16#04, 16#42, 16#00, 16#01, 16#01,
+        16#01, 16#00, 16#00, 16#00, 16#00, 16#01, 16#01,
+        16#01, 16#00, 16#00, 16#00, 16#00, 16#01, 16#01,
+        16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00,
+        16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00,
+        16#02, 16#00, 16#00, 16#07, 16#17, 16#41, 16#A8,
+        16#32, 16#30
     >>.
 
 epd2in9_v2_partial_lut() ->

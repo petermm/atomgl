@@ -323,6 +323,7 @@ To obtain a panel descriptor, call `atomgl_epaper:panel/1` or `atomgl_epaper:pan
 
 Supported panel lookup strings:
 - **UC8151 2.9" / 2.13"**: `"waveshare,epaper-2in9"`, `"waveshare,epd2in9"`, `"waveshare,epd2in13"`
+- **UC8276 4.2"**: `"waveshare,epd4in2_V2"`, `"waveshare,epd4in2_V2-fast"`, `"waveshare,epd4in2_V2-partial"`, `"waveshare,epd4in2_V2-4gray"`
 - **SSD1680 2.9"**: `"waveshare,epd2in9_V2"`, `"waveshare,epd2in9_V2-fast"`, `"waveshare,epd2in9_V2-partial"`, `"waveshare,epd2in9_V2-4gray"`, `"dke,depg0290bns800f6"`
 - **SSD1680 2.13"**: `"waveshare,epaper-2in13"`, `"waveshare,epd2in13_V4"`, `"waveshare,epd2in13_V4-fast"`, `"waveshare,epd2in13_V4-partial"`
 - **JD79656 2.13"**: `"heltec,lcmen2r13efc1"`, `"heltec,icmen2r13efc1"`, `"heltec,ht-vme213"`
@@ -349,7 +350,7 @@ A completed descriptor is a keyword list with the following shape:
 [
   descriptor_version: 2,
   name: "Waveshare epd2in9_V2 2.9\" e-paper SSD1680 v1",
-  controller: :ssd16xx, # :ssd16xx, :jd79656, :uc8151, :uc8175, or :acep7
+  controller: :ssd16xx, # :ssd16xx, :jd79656, :uc8151, :uc8276, :uc8175, or :acep7
   native_width: 128,
   native_height: 296,
   view_width: 296,

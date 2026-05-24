@@ -64,6 +64,8 @@ static const char *TAG = "epaper_display_driver";
 #define SSD1680_LUT_PAYLOAD_LEN 153
 #define SSD1680_LUT_WITH_REGS_LEN 159
 #define UC8151_LUT_PAYLOAD_LEN 30
+#define UC8276_LUT_PAYLOAD_LEN 227
+#define UC8276_LUT_WITH_REGS_LEN 233
 #define EPAPER_TERM_PROGRAM_COUNT 7
 
 struct EPaperState
@@ -221,6 +223,30 @@ static bool epaper_write_lut_bytes(struct EpaperDriver *driver,
             return false;
         }
         spi_dc_write_cmd_data(&driver->bus, 0x32, lut, UC8151_LUT_PAYLOAD_LEN);
+        return true;
+    }
+
+    if (driver->desc->controller == EPAPER_CONTROLLER_UC8276) {
+        if (lut_len < UC8276_LUT_PAYLOAD_LEN) {
+            ESP_LOGE(TAG, "UC8276 LUT is too short: %u bytes.", (unsigned) lut_len);
+            return false;
+        }
+        spi_dc_write_cmd_data(&driver->bus, 0x32, lut, UC8276_LUT_PAYLOAD_LEN);
+
+        if (lut_len < UC8276_LUT_WITH_REGS_LEN) {
+            return true;
+        }
+
+        spi_dc_write_command(&driver->bus, 0x3F);
+        spi_dc_write_data(&driver->bus, lut[227]);
+        spi_dc_write_command(&driver->bus, 0x03);
+        spi_dc_write_data(&driver->bus, lut[228]);
+        spi_dc_write_command(&driver->bus, 0x04);
+        spi_dc_write_data(&driver->bus, lut[229]);
+        spi_dc_write_data(&driver->bus, lut[230]);
+        spi_dc_write_data(&driver->bus, lut[231]);
+        spi_dc_write_command(&driver->bus, 0x2C);
+        spi_dc_write_data(&driver->bus, lut[232]);
         return true;
     }
 
@@ -561,9 +587,15 @@ static bool build_native_4gray_plane(struct EpaperDriver *driver,
 
         for (xpos = 0; xpos < driver->mono_screen.w; xpos++) {
             uint8_t gray = get_epaper_packed_pixel(gray_buf, xpos);
-            if (gray & (1 << plane_bit)) {
-                // Palette index bits select the SSD1680 two-plane gray class:
-                // 0=white, 1=light gray, 2=dark gray, 3=black.
+            bool bit_value;
+            if (driver->desc->controller == EPAPER_CONTROLLER_UC8276) {
+                // UC8276 4-gray expects inverted two-bit gray planes:
+                // plane 0 carries the high bit, plane 1 carries the low bit.
+                bit_value = (gray & (plane_bit == 0 ? 0x02 : 0x01)) == 0;
+            } else {
+                bit_value = (gray & (1 << plane_bit)) != 0;
+            }
+            if (bit_value) {
                 int nx;
                 int ny;
                 if (!epaper_view_to_native(driver->desc, xpos, vy, &nx, &ny)) {
@@ -663,7 +695,9 @@ static bool epaper_program_insert_plane(void *ctx, uint8_t plane_id)
 
     switch (plane_id) {
         case 0:
-            if (driver->desc->controller == EPAPER_CONTROLLER_SSD16XX && run->is_4gray) {
+            if ((driver->desc->controller == EPAPER_CONTROLLER_SSD16XX
+                    || driver->desc->controller == EPAPER_CONTROLLER_UC8276)
+                && run->is_4gray) {
                 if (run->gray_buf == NULL) {
                     return false;
                 }
@@ -676,7 +710,9 @@ static bool epaper_program_insert_plane(void *ctx, uint8_t plane_id)
             return write_mono_plane(driver, run->plane_buf, run->line_buf,
                 run->items, run->items_len, true, capture_frame);
         case 1:
-            if (driver->desc->controller == EPAPER_CONTROLLER_SSD16XX && run->is_4gray) {
+            if ((driver->desc->controller == EPAPER_CONTROLLER_SSD16XX
+                    || driver->desc->controller == EPAPER_CONTROLLER_UC8276)
+                && run->is_4gray) {
                 if (run->gray_buf == NULL) {
                     return false;
                 }
@@ -1252,6 +1288,10 @@ static bool epaper_parse_controller(term val, Context *ctx, enum EPaperControlle
         *out = EPAPER_CONTROLLER_UC8151;
         return true;
     }
+    if (val == context_make_atom(ctx, ATOM_STR("\x6", "uc8276"))) {
+        *out = EPAPER_CONTROLLER_UC8276;
+        return true;
+    }
     if (val == context_make_atom(ctx, ATOM_STR("\x6", "uc8175"))) {
         *out = EPAPER_CONTROLLER_UC8175;
         return true;
@@ -1630,7 +1670,9 @@ static bool epaper_parse_descriptor_override(struct EpaperDriver *driver,
     }
 
     // Setup 4-gray palette if relevant
-    if (driver->term_desc.controller == EPAPER_CONTROLLER_SSD16XX && driver->term_desc.palette_size == 4) {
+    if ((driver->term_desc.controller == EPAPER_CONTROLLER_SSD16XX
+            || driver->term_desc.controller == EPAPER_CONTROLLER_UC8276)
+        && driver->term_desc.palette_size == 4) {
         driver->term_desc.palette = epaper_ssd1680_4gray_palette;
     }
     if (driver->term_desc.controller == EPAPER_CONTROLLER_ACEP7 && driver->term_desc.palette == NULL) {

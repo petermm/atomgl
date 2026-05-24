@@ -99,6 +99,25 @@ uc8151_panel_descriptor_test_() ->
         end)
     ].
 
+uc8276_panel_descriptor_test_() ->
+    [
+        ?_test(begin
+            {ok, Desc} = panel("waveshare,epd4in2_V2"),
+            ?assertEqual(uc8276, get_value(controller, Desc)),
+            ?assertEqual(400, get_value(native_width, Desc)),
+            ?assertEqual(300, get_value(native_height, Desc)),
+            ?assertEqual(300, get_value(view_width, Desc)),
+            ?assertEqual(400, get_value(view_height, Desc)),
+            ?assertEqual([full, fast, partial, '4gray'], get_value(refresh_modes, Desc)),
+            ?assertEqual(233, byte_size(get_value(lut_4gray, Desc)))
+        end),
+        ?_test(begin
+            {ok, Desc} = panel("waveshare,epd4in2_V2-4gray"),
+            ?assertEqual(uc8276, get_value(controller, Desc)),
+            ?assertEqual('4gray', get_value(default_refresh, Desc))
+        end)
+    ].
+
 acep7_panel_descriptor_test_() ->
     [
         ?_test(begin
