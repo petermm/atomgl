@@ -31,6 +31,17 @@
 #include "epaper_screen.h"
 #include "font_data.h"
 
+static uint8_t epaper_dither_screen(const struct EpaperScreen *screen,
+    int x, int y, uint8_t r, uint8_t g, uint8_t b, bool four_gray)
+{
+    if (four_gray) {
+        return epaper_dither_4gray(x, y, r, g, b,
+            screen->palette, screen->palette_size);
+    }
+    return epaper_dither_acep7(x, y, r, g, b,
+        screen->palette, screen->palette_size);
+}
+
 void epaper_draw_pixel_x(const struct EpaperScreen *screen,
     uint8_t *line_buf, int xpos, uint8_t c)
 {
@@ -63,9 +74,9 @@ int epaper_find_max_line_len(const struct EpaperScreen *screen,
     return line_len;
 }
 
-int epaper_draw_image_x(const struct EpaperScreen *screen,
+static int epaper_draw_image_x(const struct EpaperScreen *screen,
     uint8_t *line_buf, int xpos, int ypos, int max_line_len,
-    BaseDisplayItem *item)
+    BaseDisplayItem *item, bool four_gray)
 {
     int x = item->x;
     int y = item->y;
@@ -104,13 +115,13 @@ int epaper_draw_image_x(const struct EpaperScreen *screen,
             uint8_t g = (img_pixel >> 16) & 0xFF;
             uint8_t b = (img_pixel >> 8) & 0xFF;
 
-            uint8_t c = epaper_dither_acep7(xpos + drawn_pixels, ypos, r, g, b,
-                screen->palette, screen->palette_size);
+            uint8_t c = epaper_dither_screen(screen,
+                xpos + drawn_pixels, ypos, r, g, b, four_gray);
             epaper_draw_pixel_x(screen, line_buf, xpos + drawn_pixels, c);
 
         } else if (visible_bg) {
-            uint8_t c = epaper_dither_acep7(xpos + drawn_pixels, ypos, bgcolor_r, bgcolor_g, bgcolor_b,
-                screen->palette, screen->palette_size);
+            uint8_t c = epaper_dither_screen(screen,
+                xpos + drawn_pixels, ypos, bgcolor_r, bgcolor_g, bgcolor_b, four_gray);
             epaper_draw_pixel_x(screen, line_buf, xpos + drawn_pixels, c);
 
         } else {
@@ -123,9 +134,9 @@ int epaper_draw_image_x(const struct EpaperScreen *screen,
     return drawn_pixels;
 }
 
-int epaper_draw_rect_x(const struct EpaperScreen *screen,
+static int epaper_draw_rect_x(const struct EpaperScreen *screen,
     uint8_t *line_buf, int xpos, int ypos, int max_line_len,
-    BaseDisplayItem *item)
+    BaseDisplayItem *item, bool four_gray)
 {
     int x = item->x;
     int width = item->width;
@@ -141,8 +152,8 @@ int epaper_draw_rect_x(const struct EpaperScreen *screen,
     }
 
     for (int j = xpos - x; j < width; j++) {
-        uint8_t c = epaper_dither_acep7(xpos + drawn_pixels, ypos, r, g, b,
-            screen->palette, screen->palette_size);
+        uint8_t c = epaper_dither_screen(screen,
+            xpos + drawn_pixels, ypos, r, g, b, four_gray);
         epaper_draw_pixel_x(screen, line_buf, xpos + drawn_pixels, c);
         drawn_pixels++;
     }
@@ -150,9 +161,9 @@ int epaper_draw_rect_x(const struct EpaperScreen *screen,
     return drawn_pixels;
 }
 
-int epaper_draw_text_x(const struct EpaperScreen *screen,
+static int epaper_draw_text_x(const struct EpaperScreen *screen,
     uint8_t *line_buf, int xpos, int ypos, int max_line_len,
-    BaseDisplayItem *item)
+    BaseDisplayItem *item, bool four_gray)
 {
     int x = item->x;
     int y = item->y;
@@ -204,13 +215,13 @@ int epaper_draw_text_x(const struct EpaperScreen *screen,
         }
 
         if (opaque) {
-            uint8_t c = epaper_dither_acep7(xpos + drawn_pixels, ypos, fgcolor_r, fgcolor_g, fgcolor_b,
-                screen->palette, screen->palette_size);
+            uint8_t c = epaper_dither_screen(screen,
+                xpos + drawn_pixels, ypos, fgcolor_r, fgcolor_g, fgcolor_b, four_gray);
             epaper_draw_pixel_x(screen, line_buf, xpos + drawn_pixels, c);
 
         } else if (visible_bg) {
-            uint8_t c = epaper_dither_acep7(xpos + drawn_pixels, ypos, bgcolor_r, bgcolor_g, bgcolor_b,
-                screen->palette, screen->palette_size);
+            uint8_t c = epaper_dither_screen(screen,
+                xpos + drawn_pixels, ypos, bgcolor_r, bgcolor_g, bgcolor_b, four_gray);
             epaper_draw_pixel_x(screen, line_buf, xpos + drawn_pixels, c);
 
         } else {
@@ -222,9 +233,9 @@ int epaper_draw_text_x(const struct EpaperScreen *screen,
     return drawn_pixels;
 }
 
-int epaper_draw_scaled_cropped_img_x(const struct EpaperScreen *screen,
+static int epaper_draw_scaled_cropped_img_x(const struct EpaperScreen *screen,
     uint8_t *line_buf, int xpos, int ypos, int max_line_len,
-    BaseDisplayItem *item)
+    BaseDisplayItem *item, bool four_gray)
 {
     int x = item->x;
     int y = item->y;
@@ -274,13 +285,13 @@ int epaper_draw_scaled_cropped_img_x(const struct EpaperScreen *screen,
             uint8_t g = (img_pixel >> 16) & 0xFF;
             uint8_t b = (img_pixel >> 8) & 0xFF;
 
-            uint8_t c = epaper_dither_acep7(xpos + drawn_pixels, ypos, r, g, b,
-                screen->palette, screen->palette_size);
+            uint8_t c = epaper_dither_screen(screen,
+                xpos + drawn_pixels, ypos, r, g, b, four_gray);
             epaper_draw_pixel_x(screen, line_buf, xpos + drawn_pixels, c);
 
         } else if (visible_bg) {
-            uint8_t c = epaper_dither_acep7(xpos + drawn_pixels, ypos, bgcolor_r, bgcolor_g, bgcolor_b,
-                screen->palette, screen->palette_size);
+            uint8_t c = epaper_dither_screen(screen,
+                xpos + drawn_pixels, ypos, bgcolor_r, bgcolor_g, bgcolor_b, four_gray);
             epaper_draw_pixel_x(screen, line_buf, xpos + drawn_pixels, c);
 
         } else {
@@ -293,9 +304,9 @@ int epaper_draw_scaled_cropped_img_x(const struct EpaperScreen *screen,
     return drawn_pixels;
 }
 
-int epaper_draw_x(const struct EpaperScreen *screen,
+static int epaper_draw_dither_x(const struct EpaperScreen *screen,
     uint8_t *line_buf, int xpos, int ypos,
-    BaseDisplayItem items[], size_t items_len)
+    BaseDisplayItem items[], size_t items_len, bool four_gray)
 {
     bool below = false;
 
@@ -310,19 +321,23 @@ int epaper_draw_x(const struct EpaperScreen *screen,
         int drawn_pixels = 0;
         switch (items[i].primitive) {
             case PrimitiveImage:
-                drawn_pixels = epaper_draw_image_x(screen, line_buf, xpos, ypos, max_line_len, item);
+                drawn_pixels = epaper_draw_image_x(screen, line_buf, xpos, ypos,
+                    max_line_len, item, four_gray);
                 break;
 
             case PrimitiveScaledCroppedImage:
-                drawn_pixels = epaper_draw_scaled_cropped_img_x(screen, line_buf, xpos, ypos, max_line_len, item);
+                drawn_pixels = epaper_draw_scaled_cropped_img_x(screen, line_buf, xpos, ypos,
+                    max_line_len, item, four_gray);
                 break;
 
             case PrimitiveRect:
-                drawn_pixels = epaper_draw_rect_x(screen, line_buf, xpos, ypos, max_line_len, item);
+                drawn_pixels = epaper_draw_rect_x(screen, line_buf, xpos, ypos,
+                    max_line_len, item, four_gray);
                 break;
 
             case PrimitiveText:
-                drawn_pixels = epaper_draw_text_x(screen, line_buf, xpos, ypos, max_line_len, item);
+                drawn_pixels = epaper_draw_text_x(screen, line_buf, xpos, ypos,
+                    max_line_len, item, four_gray);
                 break;
 
             default: {
@@ -338,4 +353,20 @@ int epaper_draw_x(const struct EpaperScreen *screen,
     }
 
     return 1;
+}
+
+int epaper_draw_x(const struct EpaperScreen *screen,
+    uint8_t *line_buf, int xpos, int ypos,
+    BaseDisplayItem items[], size_t items_len)
+{
+    return epaper_draw_dither_x(screen, line_buf, xpos, ypos,
+        items, items_len, false);
+}
+
+int epaper_draw_4gray_x(const struct EpaperScreen *screen,
+    uint8_t *line_buf, int xpos, int ypos,
+    BaseDisplayItem items[], size_t items_len)
+{
+    return epaper_draw_dither_x(screen, line_buf, xpos, ypos,
+        items, items_len, true);
 }
