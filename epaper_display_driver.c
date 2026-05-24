@@ -27,6 +27,7 @@
 #include <freertos/task.h>
 
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,6 +86,8 @@ struct EpaperDriver
     const struct EPaperDesc *desc;
     struct EPaperDesc term_desc;
     char *term_desc_name;
+    uint8_t *term_init_seq_bytes;
+    uint8_t *term_frame_preamble_seq_bytes;
     uint8_t *term_program_bytes[EPAPER_TERM_PROGRAM_COUNT];
     uint8_t *term_lut_bytes[EPAPER_MAX_LUT_SLOTS];
 
@@ -106,14 +109,6 @@ struct EpaperDriver
 #define EPAPER_DRIVER_FROM_CTX(ctx) \
     CONTAINER_OF((struct DisplayTaskArgs *) (ctx)->platform_data, struct EpaperDriver, display_args)
 
-static const struct {
-    const char *compat;
-    const struct EPaperDesc *desc;
-} epaper_compat_table[] = {
-    { "waveshare,5in65-acep-7c", &epaper_desc_acep7c },
-    { "good-display/gdep073e01", &epaper_desc_gdep073e01 },
-};
-
 static const struct EPaperDesc epaper_desc_term_default = {
     .name = "Erlang e-paper descriptor",
     .native_width = 128,
@@ -130,21 +125,10 @@ static const struct EPaperDesc epaper_desc_term_default = {
         .bit_order = EPAPER_BIT_ORDER_MSB_LEFT,
         .polarity = EPAPER_POLARITY_WHITE_IS_1
     },
-    .command_target = EPAPER_COMMAND_TARGET_CURRENT_PLANE,
     .use_gpio_pullups = false,
     .busy_idle_level = 0,
     .descriptor_version = 2,
 };
-
-static const struct EPaperDesc *epaper_desc_for_compatible(const char *compat)
-{
-    for (size_t i = 0; i < sizeof(epaper_compat_table) / sizeof(epaper_compat_table[0]); i++) {
-        if (!strcmp(compat, epaper_compat_table[i].compat)) {
-            return epaper_compat_table[i].desc;
-        }
-    }
-    return NULL;
-}
 
 static bool epaper_desc_requires_program(const struct EPaperDesc *desc)
 {
@@ -157,6 +141,8 @@ static bool epaper_parse_descriptor_override(struct EpaperDriver *driver,
 static void epaper_free_init_failed_driver(struct EpaperDriver *driver,
     bool spi_device_added);
 static bool epaper_parse_refresh_mode(term val, Context *ctx, enum EPaperRefreshMode *out);
+static bool epaper_parse_palette(term val, Context *ctx,
+    const uint8_t (**palette)[3], int *palette_size);
 
 static void display_reset(struct EpaperDriver *driver)
 {
@@ -1193,6 +1179,10 @@ static void epaper_free_descriptor_override(struct EpaperDriver *driver)
 {
     free(driver->term_desc_name);
     driver->term_desc_name = NULL;
+    free(driver->term_init_seq_bytes);
+    driver->term_init_seq_bytes = NULL;
+    free(driver->term_frame_preamble_seq_bytes);
+    driver->term_frame_preamble_seq_bytes = NULL;
 
     for (int i = 0; i < EPAPER_TERM_PROGRAM_COUNT; i++) {
         free(driver->term_program_bytes[i]);
@@ -1312,6 +1302,23 @@ static bool epaper_parse_refresh_mode(term val, Context *ctx, enum EPaperRefresh
     return false;
 }
 
+static bool epaper_parse_palette(term val, Context *ctx,
+    const uint8_t (**palette)[3], int *palette_size)
+{
+    if (val == context_make_atom(ctx, ATOM_STR("\x5", "acep7"))
+        || val == context_make_atom(ctx, ATOM_STR("\x6", "acep7c"))) {
+        *palette = epaper_acep_palette;
+        *palette_size = 7;
+        return true;
+    }
+    if (val == context_make_atom(ctx, ATOM_STR("\xA", "gdep073e01"))) {
+        *palette = epaper_gdep073e01_palette;
+        *palette_size = 7;
+        return true;
+    }
+    return false;
+}
+
 static bool epaper_validate_descriptor_geometry(const struct EPaperDesc *desc)
 {
     if (desc->native_width <= 0 || desc->native_height <= 0
@@ -1319,6 +1326,17 @@ static bool epaper_validate_descriptor_geometry(const struct EPaperDesc *desc)
         ESP_LOGE(TAG, "Invalid e-paper geometry: native=%dx%d view=%dx%d.",
             desc->native_width, desc->native_height,
             desc->view_width, desc->view_height);
+        return false;
+    }
+
+    if (desc->controller == EPAPER_CONTROLLER_ACEP7
+        && (desc->rotation != 0
+            || desc->view_width != desc->native_width
+            || desc->view_height != desc->native_height)) {
+        ESP_LOGE(TAG,
+            "ACeP e-paper descriptors only support native orientation: native=%dx%d view=%dx%d rotation=%d.",
+            desc->native_width, desc->native_height,
+            desc->view_width, desc->view_height, desc->rotation);
         return false;
     }
 
@@ -1364,6 +1382,8 @@ static bool epaper_parse_descriptor_override(struct EpaperDriver *driver,
 
     memset(driver->term_program_bytes, 0, sizeof(driver->term_program_bytes));
     memset(driver->term_lut_bytes, 0, sizeof(driver->term_lut_bytes));
+    driver->term_init_seq_bytes = NULL;
+    driver->term_frame_preamble_seq_bytes = NULL;
     driver->term_desc_name = NULL;
     driver->term_desc = *driver->desc;
 
@@ -1424,6 +1444,19 @@ static bool epaper_parse_descriptor_override(struct EpaperDriver *driver,
             &driver->term_desc.palette_size)) {
         ESP_LOGE(TAG, "Invalid e-paper descriptor palette_size.");
         return false;
+    }
+
+    term palette_term = interop_kv_get_value_default(
+        descriptor, ATOM_STR("\x7", "palette"), term_nil(), ctx->global);
+    if (palette_term != term_nil()) {
+        const uint8_t (*palette)[3];
+        int palette_size;
+        if (!epaper_parse_palette(palette_term, ctx, &palette, &palette_size)) {
+            ESP_LOGE(TAG, "Invalid palette in e-paper descriptor.");
+            return false;
+        }
+        driver->term_desc.palette = palette;
+        driver->term_desc.palette_size = palette_size;
     }
 
     // Parse Controller
@@ -1499,6 +1532,36 @@ static bool epaper_parse_descriptor_override(struct EpaperDriver *driver,
         }
     }
 
+    if (!epaper_copy_binary_field(descriptor, ctx, ATOM_STR("\x8", "init_seq"),
+            &driver->term_init_seq_bytes,
+            &driver->term_desc.init_seq, &driver->term_desc.init_seq_len)
+        || !epaper_copy_binary_field(descriptor, ctx, ATOM_STR("\x12", "frame_preamble_seq"),
+            &driver->term_frame_preamble_seq_bytes,
+            &driver->term_desc.frame_preamble_seq, &driver->term_desc.frame_preamble_seq_len)) {
+        ESP_LOGE(TAG, "Invalid e-paper ACeP sequence binary.");
+        return false;
+    }
+
+    int refresh_data_byte = driver->term_desc.refresh_data_byte;
+    if (!epaper_parse_bool_field(descriptor, ctx, ATOM_STR("\x1B", "init_wait_busy_between_cmds"),
+            &driver->term_desc.init_wait_busy_between_cmds)
+        || !epaper_parse_bool_field(descriptor, ctx, ATOM_STR("\x10", "refresh_has_data"),
+            &driver->term_desc.refresh_has_data)
+        || !epaper_parse_int_field(descriptor, ctx, ATOM_STR("\x11", "refresh_data_byte"),
+            &refresh_data_byte)
+        || !epaper_parse_int_field(descriptor, ctx, ATOM_STR("\x19", "post_power_off_busy_level"),
+            &driver->term_desc.post_power_off_busy_level)
+        || !epaper_parse_int_field(descriptor, ctx, ATOM_STR("\x19", "periodic_refresh_interval"),
+            &driver->term_desc.periodic_refresh_interval)) {
+        ESP_LOGE(TAG, "Invalid ACeP e-paper descriptor field.");
+        return false;
+    }
+    if (refresh_data_byte < 0 || refresh_data_byte > UINT8_MAX) {
+        ESP_LOGE(TAG, "Invalid refresh_data_byte in e-paper descriptor.");
+        return false;
+    }
+    driver->term_desc.refresh_data_byte = (uint8_t) refresh_data_byte;
+
     // Parse Timing Map
     term timing_map = interop_kv_get_value_default(descriptor, ATOM_STR("\x6", "timing"), term_nil(), ctx->global);
     if (timing_map != term_nil()) {
@@ -1550,6 +1613,16 @@ static bool epaper_parse_descriptor_override(struct EpaperDriver *driver,
     if (driver->term_desc.controller == EPAPER_CONTROLLER_SSD16XX && driver->term_desc.palette_size == 4) {
         driver->term_desc.palette = epaper_ssd1680_4gray_palette;
     }
+    if (driver->term_desc.controller == EPAPER_CONTROLLER_ACEP7 && driver->term_desc.palette == NULL) {
+        ESP_LOGE(TAG, "ACeP e-paper descriptor requires a known color palette.");
+        return false;
+    }
+    if (driver->term_desc.controller == EPAPER_CONTROLLER_ACEP7
+        && driver->term_desc.init.bytes == NULL
+        && driver->term_desc.init_seq == NULL) {
+        ESP_LOGE(TAG, "ACeP e-paper descriptor requires an init program or init_seq.");
+        return false;
+    }
 
     if (!epaper_validate_descriptor_geometry(&driver->term_desc)) {
         return false;
@@ -1565,25 +1638,12 @@ static void display_spi_init(Context *ctx, term opts)
     term descriptor_term = interop_kv_get_value_default(
         opts, ATOM_STR("\xA", "descriptor"), term_nil(), ctx->global);
 
-    // Without an explicit descriptor, resolve compatible string to one
-    // of the remaining C-side table-driven displays.
-    term compat_term = interop_kv_get_value_default(
-        opts, ATOM_STR("\xA", "compatible"), term_nil(), ctx->global);
-    int str_ok;
-    char *compat_string = interop_term_to_string(compat_term, &str_ok);
-    const struct EPaperDesc *desc = NULL;
-    if (descriptor_term != term_nil()) {
-        desc = &epaper_desc_term_default;
-    } else if (str_ok && compat_string) {
-        desc = epaper_desc_for_compatible(compat_string);
-    }
-    if (!desc) {
-        ESP_LOGE(TAG, "Failed init: unknown or missing compatible '%s'.",
-            compat_string ? compat_string : "(null)");
-        free(compat_string);
+    if (descriptor_term == term_nil()) {
+        ESP_LOGE(TAG, "Failed init: missing e-paper descriptor.");
         return;
     }
-    free(compat_string);
+
+    const struct EPaperDesc *desc = &epaper_desc_term_default;
 
     struct EpaperDriver *driver = calloc(1, sizeof(struct EpaperDriver));
     if (UNLIKELY(!driver)) {
@@ -1606,7 +1666,7 @@ static void display_spi_init(Context *ctx, term opts)
     }
     if (epaper_desc_requires_program(desc) && desc->program_full.bytes == NULL) {
         ESP_LOGE(TAG,
-            "Failed init: SSD1680 compatible '%s' requires a descriptor refresh program.",
+            "Failed init: e-paper descriptor '%s' requires a full refresh program.",
             desc->name);
         epaper_free_init_failed_driver(driver, false);
         return;

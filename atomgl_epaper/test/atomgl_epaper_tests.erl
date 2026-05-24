@@ -75,3 +75,34 @@ invalid_rotated_view_geometry_test() ->
         {programs, [{init, <<>>}, {full, <<>>}]}
     ],
     ?assertError({badmatch, false}, validate_descriptor(Desc)).
+
+acep7_panel_descriptor_test_() ->
+    [
+        ?_test(begin
+            {ok, Desc} = panel("waveshare,5in65-acep-7c"),
+            ?assertEqual(acep7, get_value(controller, Desc)),
+            ?assertEqual(600, get_value(native_width, Desc)),
+            ?assertEqual(448, get_value(native_height, Desc)),
+            ?assertEqual(acep7, get_value(palette, Desc)),
+            ?assertEqual(46, byte_size(get_value(init_seq, Desc))),
+            ?assertEqual(6, byte_size(get_value(frame_preamble_seq, Desc))),
+            ?assertEqual(false, get_value(refresh_has_data, Desc)),
+            ?assertEqual(5, get_value(periodic_refresh_interval, Desc))
+        end),
+        ?_test(begin
+            {ok, Desc} = panel("good-display/gdep073e01"),
+            ?assertEqual(acep7, get_value(controller, Desc)),
+            ?assertEqual(800, get_value(native_width, Desc)),
+            ?assertEqual(480, get_value(native_height, Desc)),
+            ?assertEqual(gdep073e01, get_value(palette, Desc)),
+            ?assertEqual(63, byte_size(get_value(init_seq, Desc))),
+            ?assertEqual(true, get_value(init_wait_busy_between_cmds, Desc)),
+            ?assertEqual(true, get_value(refresh_has_data, Desc)),
+            ?assertEqual(1, get_value(post_power_off_busy_level, Desc))
+        end),
+        ?_test(begin
+            ?assertError({badmatch, false},
+                panel("waveshare,5in65-acep-7c",
+                      #{rotation => 90, view_width => 448, view_height => 600}))
+        end)
+    ].

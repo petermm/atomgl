@@ -6,6 +6,7 @@
 -export([
     ssd16xx_panel/2,
     jd79656_panel/2,
+    acep7_panel/2,
     validate_descriptor/1
 ]).
 
@@ -14,6 +15,44 @@ ssd16xx_panel(Name, Config) ->
 
 jd79656_panel(Name, Config) ->
     build_panel(jd79656, Name, Config).
+
+acep7_panel(Name, Config) ->
+    NativeW = maps:get(native_width, Config),
+    NativeH = maps:get(native_height, Config),
+    Rotation = maps:get(rotation, Config, 0),
+    ViewW = maps:get(view_width, Config, NativeW),
+    ViewH = maps:get(view_height, Config, NativeH),
+
+    Descriptor = [
+        {descriptor_version, 2},
+        {name, Name},
+        {controller, acep7},
+        {native_width, NativeW},
+        {native_height, NativeH},
+        {view_width, ViewW},
+        {view_height, ViewH},
+        {rotation, Rotation},
+        {spi_clock_hz, maps:get(spi_clock_hz, Config, 4000000)},
+        {busy_idle_level, maps:get(busy_idle_level, Config, 1)},
+        {use_gpio_pullups, maps:get(use_gpio_pullups, Config, true)},
+        {frame_layout, maps:get(frame_layout, Config, row_msb)},
+        {polarity, maps:get(polarity, Config, white_1)},
+        {refresh_modes, maps:get(refresh_modes, Config, [full])},
+        {default_refresh, maps:get(default_refresh, Config, full)},
+        {palette, maps:get(palette, Config)},
+        {palette_size, maps:get(palette_size, Config, 7)},
+        {init_seq, maps:get(init_seq, Config)},
+        {init_wait_busy_between_cmds, maps:get(init_wait_busy_between_cmds, Config, false)},
+        {refresh_has_data, maps:get(refresh_has_data, Config, false)},
+        {refresh_data_byte, maps:get(refresh_data_byte, Config, 0)},
+        {post_power_off_busy_level, maps:get(post_power_off_busy_level, Config, 0)},
+        {periodic_refresh_interval, maps:get(periodic_refresh_interval, Config, 0)}
+    ] ++ case maps:find(frame_preamble_seq, Config) of
+        {ok, FramePreambleSeq} -> [{frame_preamble_seq, FramePreambleSeq}];
+        error -> []
+    end,
+
+    validate_descriptor(Descriptor).
 
 build_panel(Controller, Name, Config) ->
     NativeW = maps:get(native_width, Config),
@@ -156,18 +195,31 @@ validate_descriptor(Desc) ->
     RefreshModes = get_value(refresh_modes, Desc),
     true = lists:member(DefaultRefresh, RefreshModes),
 
-    Programs = get_value(programs, Desc),
-    true = is_defined(init, Programs),
+    case Controller of
+        acep7 ->
+            true = (Rotation == 0),
+            Palette = get_value(palette, Desc),
+            true = lists:member(Palette, [acep7, acep7c, gdep073e01]),
+            InitSeq = get_value(init_seq, Desc),
+            true = is_binary(InitSeq),
+            true = (byte_size(InitSeq) =< 4096),
+            FramePreambleSeq = get_value(frame_preamble_seq, Desc, <<>>),
+            true = is_binary(FramePreambleSeq),
+            true = (byte_size(FramePreambleSeq) =< 4096);
+        _ ->
+            Programs = get_value(programs, Desc),
+            true = is_defined(init, Programs),
 
-    %% Required programs for declared modes
-    lists:foreach(fun(Mode) ->
-        true = is_defined(Mode, Programs)
-    end, RefreshModes),
+            %% Required programs for declared modes
+            lists:foreach(fun(Mode) ->
+                true = is_defined(Mode, Programs)
+            end, RefreshModes),
 
-    %% Bytecode payload length limits
-    lists:foreach(fun({_K, V}) ->
-        true = (byte_size(V) =< 4096)
-    end, Programs),
+            %% Bytecode payload length limits
+            lists:foreach(fun({_K, V}) ->
+                true = (byte_size(V) =< 4096)
+            end, Programs)
+    end,
 
     {ok, Desc}.
 

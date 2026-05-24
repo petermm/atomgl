@@ -8,6 +8,7 @@
 ]).
 
 -import(atomgl_epaper_descriptor, [
+    acep7_panel/2,
     jd79656_panel/2,
     ssd16xx_panel/2
 ]).
@@ -16,6 +17,7 @@
     program/1,
     cmd/1,
     cmd/2,
+    cmd_delay/3,
     wait_busy/2,
     reset/3,
     insert_plane/1,
@@ -108,6 +110,37 @@ panel("heltec,icmen2r13efc1", Opts) ->
     panel("heltec,lcmen2r13efc1", Opts);
 panel("heltec,ht-vme213", Opts) ->
     panel("heltec,lcmen2r13efc1", Opts);
+panel("waveshare,5in65-acep-7c", Opts) ->
+    acep7_panel("Waveshare 5.65\" ACeP 7-color", maps:merge(#{
+        native_width => 600,
+        native_height => 448,
+        spi_clock_hz => 1000000,
+        busy_idle_level => 1,
+        use_gpio_pullups => true,
+        palette => acep7,
+        init_seq => acep7c_init_seq(),
+        init_wait_busy_between_cmds => false,
+        frame_preamble_seq => acep7c_frame_preamble_seq(),
+        refresh_has_data => false,
+        refresh_data_byte => 0,
+        post_power_off_busy_level => 0,
+        periodic_refresh_interval => 5
+    }, Opts));
+panel("good-display/gdep073e01", Opts) ->
+    acep7_panel("Good Display GDEP073E01 7.3\" 7-color", maps:merge(#{
+        native_width => 800,
+        native_height => 480,
+        spi_clock_hz => 4000000,
+        busy_idle_level => 1,
+        use_gpio_pullups => true,
+        palette => gdep073e01,
+        init_seq => gdep073e01_init_seq(),
+        init_wait_busy_between_cmds => true,
+        refresh_has_data => true,
+        refresh_data_byte => 0,
+        post_power_off_busy_level => 1,
+        periodic_refresh_interval => 0
+    }, Opts));
 panel(_, _Opts) ->
     error.
 
@@ -235,6 +268,45 @@ heltec_lcmen2r13efc1_refresh() ->
         wait_busy(1, 5000)
     ]).
 %% SPDX-SnippetEnd
+
+acep7c_init_seq() ->
+    program([
+        cmd(16#00, <<16#EF, 16#08>>),
+        cmd(16#01, <<16#37, 16#00, 16#23, 16#23>>),
+        cmd(16#03, <<16#00>>),
+        cmd(16#06, <<16#C7, 16#C7, 16#1D>>),
+        cmd(16#30, <<16#3C>>),
+        cmd(16#40, <<16#00>>),
+        cmd(16#50, <<16#3F>>),
+        cmd(16#60, <<16#22>>),
+        cmd(16#61, <<16#02, 16#58, 16#01, 16#C0>>),
+        cmd(16#E3, <<16#AA>>),
+        cmd_delay(16#82, <<16#80>>, 100),
+        cmd(16#50, <<16#37>>)
+    ]).
+
+acep7c_frame_preamble_seq() ->
+    program([
+        cmd(16#61, <<16#02, 16#58, 16#01, 16#C0>>)
+    ]).
+
+gdep073e01_init_seq() ->
+    program([
+        cmd(16#AA, <<16#49, 16#55, 16#20, 16#08, 16#09, 16#18>>),
+        cmd(16#01, <<16#3F>>),
+        cmd(16#00, <<16#5F, 16#69>>),
+        cmd(16#03, <<16#00, 16#54, 16#00, 16#44>>),
+        cmd(16#05, <<16#40, 16#1F, 16#1F, 16#2C>>),
+        cmd(16#06, <<16#6F, 16#1F, 16#17, 16#49>>),
+        cmd(16#08, <<16#6F, 16#1F, 16#1F, 16#22>>),
+        cmd(16#30, <<16#00>>),
+        cmd(16#50, <<16#3F>>),
+        cmd(16#60, <<16#02, 16#00>>),
+        cmd(16#61, <<16#03, 16#20, 16#01, 16#E0>>),
+        cmd(16#84, <<16#01>>),
+        cmd(16#E3, <<16#2F>>),
+        cmd(16#04)
+    ]).
 
 epd2in9_v2_init(BorderWaveform) ->
     epd2in9_v2_init(BorderWaveform, 0).
