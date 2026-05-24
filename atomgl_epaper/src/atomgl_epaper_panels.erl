@@ -10,7 +10,8 @@
 -import(atomgl_epaper_descriptor, [
     acep7_panel/2,
     jd79656_panel/2,
-    ssd16xx_panel/2
+    ssd16xx_panel/2,
+    uc8151_panel/2
 ]).
 
 -import(atomgl_epaper_program, [
@@ -35,14 +36,19 @@
 -define(LUT_FAST, 3).
 
 panel("waveshare,epaper-2in9", Opts) ->
-    ssd16xx_panel("Waveshare 2.9\" e-paper SSD1680 v1", maps:merge(#{
+    panel("waveshare,epd2in9", Opts);
+panel("waveshare,epd2in9", Opts) ->
+    uc8151_panel("Waveshare epd2in9 2.9\" e-paper UC8151 v1", maps:merge(#{
         native_width => 128,
         native_height => 296,
-        refresh_modes => [full],
+        refresh_modes => [full, partial],
         default_refresh => full,
-        init => ssd1680_2in9_init(),
-        full => ssd1680_2in9_refresh(),
-        sleep => cmd(16#10, <<16#01>>)
+        init => uc8151_init(296, 16#03, ?LUT_FULL),
+        full => uc8151_refresh(128, 296, ?LUT_FULL),
+        partial => uc8151_refresh(128, 296, ?LUT_PARTIAL),
+        sleep => cmd(16#10, <<16#01>>),
+        lut_full => uc8151_2in9_full_lut(),
+        lut_partial => uc8151_2in9_partial_lut()
     }, Opts));
 panel("waveshare,epd2in9_V2", Opts) ->
     ssd16xx_panel("Waveshare epd2in9_V2 2.9\" e-paper SSD1680 v1", maps:merge(#{
@@ -80,6 +86,19 @@ panel("dke,depg0290bns800f6", Opts) ->
     }, Opts));
 panel("waveshare,epaper-2in13", Opts) ->
     panel("waveshare,epd2in13_V4", Opts);
+panel("waveshare,epd2in13", Opts) ->
+    uc8151_panel("Waveshare epd2in13 2.13\" e-paper UC8151 v1", maps:merge(#{
+        native_width => 122,
+        native_height => 250,
+        refresh_modes => [full, partial],
+        default_refresh => full,
+        init => uc8151_init(250, 16#63, ?LUT_FULL),
+        full => uc8151_refresh(122, 250, ?LUT_FULL),
+        partial => uc8151_refresh(122, 250, ?LUT_PARTIAL),
+        sleep => cmd(16#10, <<16#01>>),
+        lut_full => uc8151_2in13_full_lut(),
+        lut_partial => uc8151_2in13_partial_lut()
+    }, Opts));
 panel("waveshare,epd2in13_V4", Opts) ->
     ssd16xx_panel("Waveshare epd2in13_V4 2.13\" e-paper SSD1680 v1", maps:merge(#{
         native_width => 122,
@@ -143,6 +162,54 @@ panel("good-display/gdep073e01", Opts) ->
     }, Opts));
 panel(_, _Opts) ->
     error.
+
+uc8151_init(NativeHeight, BorderWaveform, LutSlot) ->
+    DriverOutput = NativeHeight - 1,
+    Border = case BorderWaveform of
+        none -> [];
+        _ -> [cmd(16#3C, <<BorderWaveform>>)]
+    end,
+    program([
+        reset(200, 2, 200),
+        cmd(16#01, <<DriverOutput:16/little-unsigned-integer, 16#00>>),
+        cmd(16#0C, <<16#D7, 16#D6, 16#9D>>),
+        cmd(16#2C, <<16#A8>>),
+        cmd(16#3A, <<16#1A>>),
+        cmd(16#3B, <<16#08>>),
+        Border,
+        cmd(16#11, <<16#03>>),
+        insert_lut(LutSlot)
+    ]).
+
+uc8151_refresh(NativeWidth, NativeHeight, LutSlot) ->
+    program([
+        insert_lut(LutSlot),
+        uc8151_window(NativeWidth, NativeHeight),
+        uc8151_cursor(),
+        cmd(16#24),
+        capture_frame(),
+        insert_plane(0),
+        cmd(16#22, <<16#C4>>),
+        cmd(16#20),
+        cmd(16#FF),
+        delay_ms(100),
+        wait_busy(0, 5000),
+        mark_prev_valid()
+    ]).
+
+uc8151_window(NativeWidth, NativeHeight) ->
+    XEnd = NativeWidth - 1,
+    YEnd = NativeHeight - 1,
+    [
+        cmd(16#44, <<16#00, ((XEnd bsr 3) band 16#FF)>>),
+        cmd(16#45, <<16#00, 16#00, YEnd:16/little-unsigned-integer>>)
+    ].
+
+uc8151_cursor() ->
+    [
+        cmd(16#4E, <<16#00>>),
+        cmd(16#4F, <<16#00, 16#00>>)
+    ].
 
 ssd1680_2in9_init() ->
     program([
@@ -406,6 +473,40 @@ set_ram_cursor(RamXOffset) ->
 %% SPDX-SnippetBegin
 %% SPDX-SnippetCopyrightText: Waveshare team
 %% SPDX-License-Identifier: MIT
+uc8151_2in9_full_lut() ->
+    <<
+        16#50, 16#AA, 16#55, 16#AA, 16#11, 16#00,
+        16#00, 16#00, 16#00, 16#00, 16#00, 16#00,
+        16#00, 16#00, 16#00, 16#00, 16#00, 16#00,
+        16#00, 16#00, 16#FF, 16#FF, 16#1F, 16#00,
+        16#00, 16#00, 16#00, 16#00, 16#00, 16#00
+    >>.
+
+uc8151_2in9_partial_lut() ->
+    <<
+        16#10, 16#18, 16#18, 16#08, 16#18, 16#18,
+        16#08, 16#00, 16#00, 16#00, 16#00, 16#00,
+        16#00, 16#00, 16#00, 16#00, 16#00, 16#00,
+        16#00, 16#00, 16#13, 16#14, 16#44, 16#12,
+        16#00, 16#00, 16#00, 16#00, 16#00, 16#00
+    >>.
+
+uc8151_2in13_full_lut() ->
+    <<
+        16#22, 16#55, 16#AA, 16#55, 16#AA, 16#55, 16#AA, 16#11,
+        16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00,
+        16#1E, 16#1E, 16#1E, 16#1E, 16#1E, 16#1E, 16#1E, 16#1E,
+        16#01, 16#00, 16#00, 16#00, 16#00, 16#00
+    >>.
+
+uc8151_2in13_partial_lut() ->
+    <<
+        16#18, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00,
+        16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00,
+        16#0F, 16#01, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00,
+        16#00, 16#00, 16#00, 16#00, 16#00, 16#00
+    >>.
+
 epd2in9_v2_partial_lut() ->
     <<
         16#00, 16#40, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00, 16#00,

@@ -6,6 +6,7 @@
 -export([
     ssd16xx_panel/2,
     jd79656_panel/2,
+    uc8151_panel/2,
     acep7_panel/2,
     validate_descriptor/1
 ]).
@@ -15,6 +16,9 @@ ssd16xx_panel(Name, Config) ->
 
 jd79656_panel(Name, Config) ->
     build_panel(jd79656, Name, Config).
+
+uc8151_panel(Name, Config) ->
+    build_panel(uc8151, Name, Config).
 
 acep7_panel(Name, Config) ->
     NativeW = maps:get(native_width, Config),
@@ -89,6 +93,7 @@ build_panel(Controller, Name, Config) ->
     {Layout, Polarity} = case Controller of
         ssd16xx -> {row_msb, white_1};
         jd79656 -> {column_msb, black_1};
+        uc8151 -> {row_msb, white_1};
         uc8175 -> {row_msb, white_1}
     end,
 
@@ -181,11 +186,12 @@ validate_descriptor(Desc) ->
     end,
 
     Controller = get_value(controller, Desc),
-    true = lists:member(Controller, [ssd16xx, jd79656, uc8175, acep7]),
+    true = lists:member(Controller, [ssd16xx, jd79656, uc8151, uc8175, acep7]),
 
     Layout = get_value(frame_layout, Desc),
     true = case Controller of
         ssd16xx -> lists:member(Layout, [row_msb, row_lsb]);
+        uc8151 -> lists:member(Layout, [row_msb, row_lsb]);
         uc8175 -> lists:member(Layout, [row_msb, row_lsb]);
         jd79656 -> lists:member(Layout, [column_msb, column_lsb]);
         _ -> true

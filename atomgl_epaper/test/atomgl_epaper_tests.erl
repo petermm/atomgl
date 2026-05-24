@@ -76,6 +76,29 @@ invalid_rotated_view_geometry_test() ->
     ],
     ?assertError({badmatch, false}, validate_descriptor(Desc)).
 
+uc8151_panel_descriptor_test_() ->
+    [
+        ?_test(begin
+            {ok, Desc} = panel("waveshare,epd2in9"),
+            ?assertEqual(uc8151, get_value(controller, Desc)),
+            ?assertEqual(128, get_value(native_width, Desc)),
+            ?assertEqual(296, get_value(native_height, Desc)),
+            ?assertEqual([full, partial], get_value(refresh_modes, Desc)),
+            ?assertEqual(30, byte_size(get_value(lut_full, Desc))),
+            ?assertEqual(30, byte_size(get_value(lut_partial, Desc)))
+        end),
+        ?_test(begin
+            {ok, Desc} = panel("waveshare,epd2in13"),
+            ?assertEqual(uc8151, get_value(controller, Desc)),
+            ?assertEqual(122, get_value(native_width, Desc)),
+            ?assertEqual(250, get_value(native_height, Desc)),
+            ?assertEqual(250, get_value(view_width, Desc)),
+            ?assertEqual(122, get_value(view_height, Desc)),
+            ?assertEqual(30, byte_size(get_value(lut_full, Desc))),
+            ?assertEqual(30, byte_size(get_value(lut_partial, Desc)))
+        end)
+    ].
+
 acep7_panel_descriptor_test_() ->
     [
         ?_test(begin

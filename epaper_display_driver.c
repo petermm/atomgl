@@ -63,6 +63,7 @@ static const char *TAG = "epaper_display_driver";
 
 #define SSD1680_LUT_PAYLOAD_LEN 153
 #define SSD1680_LUT_WITH_REGS_LEN 159
+#define UC8151_LUT_PAYLOAD_LEN 30
 #define EPAPER_TERM_PROGRAM_COUNT 7
 
 struct EPaperState
@@ -211,6 +212,21 @@ static bool epaper_write_lut_bytes(struct EpaperDriver *driver,
     const uint8_t *lut, size_t lut_len)
 {
     if (lut == NULL || lut_len == 0) {
+        return false;
+    }
+
+    if (driver->desc->controller == EPAPER_CONTROLLER_UC8151) {
+        if (lut_len < UC8151_LUT_PAYLOAD_LEN) {
+            ESP_LOGE(TAG, "UC8151 LUT is too short: %u bytes.", (unsigned) lut_len);
+            return false;
+        }
+        spi_dc_write_cmd_data(&driver->bus, 0x32, lut, UC8151_LUT_PAYLOAD_LEN);
+        return true;
+    }
+
+    if (driver->desc->controller != EPAPER_CONTROLLER_SSD16XX) {
+        ESP_LOGE(TAG, "Controller %d does not support LUT insertion.",
+            driver->desc->controller);
         return false;
     }
 
@@ -1230,6 +1246,10 @@ static bool epaper_parse_controller(term val, Context *ctx, enum EPaperControlle
     }
     if (val == context_make_atom(ctx, ATOM_STR("\x7", "jd79656"))) {
         *out = EPAPER_CONTROLLER_JD79656;
+        return true;
+    }
+    if (val == context_make_atom(ctx, ATOM_STR("\x6", "uc8151"))) {
+        *out = EPAPER_CONTROLLER_UC8151;
         return true;
     }
     if (val == context_make_atom(ctx, ATOM_STR("\x6", "uc8175"))) {
