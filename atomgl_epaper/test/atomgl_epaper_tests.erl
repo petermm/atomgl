@@ -76,6 +76,34 @@ invalid_rotated_view_geometry_test() ->
     ],
     ?assertError({badmatch, false}, validate_descriptor(Desc)).
 
+invalid_refresh_modes_descriptor_test_() ->
+    BaseDesc = [
+        {descriptor_version, 3},
+        {controller, ssd16xx},
+        {native_width, 128},
+        {native_height, 296},
+        {view_width, 128},
+        {view_height, 296},
+        {rotation, 0},
+        {frame_layout, row_msb},
+        {default_refresh, full},
+        {programs, [{init, <<>>}, {full, <<>>}, {partial, <<>>}]}
+    ],
+    [
+        ?_test(begin
+            ?assertError({badmatch, false},
+                validate_descriptor([{refresh_modes, [full, partial, partial]} | BaseDesc]))
+        end),
+        ?_test(begin
+            ?assertError({badmatch, false},
+                validate_descriptor([{refresh_modes, [partial]} | BaseDesc]))
+        end),
+        ?_test(begin
+            ?assertError({badmatch, false},
+                validate_descriptor([{refresh_modes, [full, turbo]} | BaseDesc]))
+        end)
+    ].
+
 uc8151_panel_descriptor_test_() ->
     [
         ?_test(begin

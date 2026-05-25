@@ -205,6 +205,7 @@ validate_descriptor(Desc) ->
 
     DefaultRefresh = get_value(default_refresh, Desc),
     RefreshModes = get_value(refresh_modes, Desc),
+    validate_refresh_modes(RefreshModes),
     true = lists:member(DefaultRefresh, RefreshModes),
     validate_sleep_modes(get_value(sleep_modes, Desc, [])),
 
@@ -235,6 +236,16 @@ validate_descriptor(Desc) ->
     end,
 
     {ok, Desc}.
+
+validate_refresh_modes(RefreshModes) when is_list(RefreshModes) ->
+    true = (RefreshModes =/= []),
+    true = lists:member(full, RefreshModes),
+    true = (length(RefreshModes) == length(lists:usort(RefreshModes))),
+    lists:foreach(fun(Mode) ->
+        true = lists:member(Mode, [full, fast, partial, '4gray'])
+    end, RefreshModes);
+validate_refresh_modes(_) ->
+    error(bad_refresh_modes).
 
 validate_sleep_modes(SleepModes) when is_list(SleepModes) ->
     true = (length(SleepModes) =< ?MAX_SLEEP_MODES),

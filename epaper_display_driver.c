@@ -75,6 +75,7 @@ struct EPaperState
     enum EPaperRefreshMode last_refresh_mode;
     uint64_t last_refresh_ms;
     bool needs_reseed;
+    bool last_op_ok;
     bool asleep;
     const struct EPaperSleepMode *asleep_mode;
     bool after_wake_pending;
@@ -138,6 +139,7 @@ static const struct EPaperDesc epaper_desc_term_default = {
     },
     .use_gpio_pullups = false,
     .busy_idle_level = 0,
+    .refresh_mode_mask = EPAPER_REFRESH_MODE_FULL,
     .descriptor_version = 3,
 };
 
@@ -966,6 +968,53 @@ static const struct EPaperProgram *epaper_program_for_refresh_mode(
     }
 }
 
+static uint8_t epaper_refresh_mode_bit(enum EPaperRefreshMode mode)
+{
+    return (uint8_t) (1U << mode);
+}
+
+static bool epaper_refresh_mode_allowed(const struct EPaperDesc *desc,
+    enum EPaperRefreshMode mode)
+{
+    return (desc->refresh_mode_mask & epaper_refresh_mode_bit(mode)) != 0;
+}
+
+static term epaper_refresh_mode_atom(Context *ctx, enum EPaperRefreshMode mode)
+{
+    switch (mode) {
+        case EPAPER_REFRESH_FULL:
+            return context_make_atom(ctx, ATOM_STR("\x4", "full"));
+        case EPAPER_REFRESH_FAST:
+            return context_make_atom(ctx, ATOM_STR("\x4", "fast"));
+        case EPAPER_REFRESH_PARTIAL:
+            return context_make_atom(ctx, ATOM_STR("\x7", "partial"));
+        case EPAPER_REFRESH_4GRAY:
+            return context_make_atom(ctx, ATOM_STR("\x5", "4gray"));
+        default:
+            return context_make_atom(ctx, ATOM_STR("\x7", "unknown"));
+    }
+}
+
+static term epaper_controller_atom(Context *ctx, enum EPaperController controller)
+{
+    switch (controller) {
+        case EPAPER_CONTROLLER_SSD16XX:
+            return context_make_atom(ctx, ATOM_STR("\x7", "ssd16xx"));
+        case EPAPER_CONTROLLER_JD79656:
+            return context_make_atom(ctx, ATOM_STR("\x7", "jd79656"));
+        case EPAPER_CONTROLLER_UC8151:
+            return context_make_atom(ctx, ATOM_STR("\x6", "uc8151"));
+        case EPAPER_CONTROLLER_UC8276:
+            return context_make_atom(ctx, ATOM_STR("\x6", "uc8276"));
+        case EPAPER_CONTROLLER_UC8175:
+            return context_make_atom(ctx, ATOM_STR("\x6", "uc8175"));
+        case EPAPER_CONTROLLER_ACEP7:
+            return context_make_atom(ctx, ATOM_STR("\x5", "acep7"));
+        default:
+            return context_make_atom(ctx, ATOM_STR("\x7", "unknown"));
+    }
+}
+
 static bool epaper_program_inserts_prev_frame(const struct EPaperProgram *program)
 {
     if (program == NULL || program->bytes == NULL) {
@@ -1059,7 +1108,7 @@ static const struct EPaperProgram *epaper_resolve_refresh_program(struct EpaperD
     return epaper_program_for_refresh_mode(driver, mode);
 }
 
-static void do_update_descriptor_mono(struct EpaperDriver *driver,
+static bool do_update_descriptor_mono(struct EpaperDriver *driver,
     BaseDisplayItem *items, int items_len, enum EPaperRefreshMode requested_mode)
 {
     enum EPaperRefreshMode resolved_mode;
@@ -1068,7 +1117,7 @@ static void do_update_descriptor_mono(struct EpaperDriver *driver,
     if (program->bytes == NULL) {
         ESP_LOGE(TAG, "E-paper descriptor for %s has no refresh program for mode %d.",
             driver->desc->name, resolved_mode);
-        return;
+        return false;
     }
 
     const size_t frame_len = mono_frame_bytes(driver);
@@ -1079,7 +1128,7 @@ static void do_update_descriptor_mono(struct EpaperDriver *driver,
         fprintf(stderr, "do_update: failed to alloc e-paper frame buffers\n");
         free(frame_buf);
         free(line_buf);
-        return;
+        return false;
     }
 
     struct EPaperProgramRun run = {
@@ -1092,7 +1141,8 @@ static void do_update_descriptor_mono(struct EpaperDriver *driver,
         .is_4gray = false
     };
 
-    if (!epaper_run_driver_program(driver, program, &run)) {
+    bool ok = epaper_run_driver_program(driver, program, &run);
+    if (!ok) {
         ESP_LOGW(TAG, "E-paper refresh program failed for %s.", driver->desc->name);
     } else {
         epaper_mark_refresh_success(driver, resolved_mode);
@@ -1100,9 +1150,10 @@ static void do_update_descriptor_mono(struct EpaperDriver *driver,
 
     free(frame_buf);
     free(line_buf);
+    return ok;
 }
 
-static void do_update_descriptor_4gray(struct EpaperDriver *driver,
+static bool do_update_descriptor_4gray(struct EpaperDriver *driver,
     BaseDisplayItem *items, int items_len, enum EPaperRefreshMode requested_mode)
 {
     enum EPaperRefreshMode resolved_mode;
@@ -1111,7 +1162,7 @@ static void do_update_descriptor_4gray(struct EpaperDriver *driver,
     if (program->bytes == NULL) {
         ESP_LOGE(TAG, "E-paper descriptor for %s has no 4-gray refresh program.",
             driver->desc->name);
-        return;
+        return false;
     }
 
     const int gray_bytes = (driver->mono_screen.w + 1) / 2;
@@ -1123,7 +1174,7 @@ static void do_update_descriptor_4gray(struct EpaperDriver *driver,
         gray_buf = heap_caps_malloc(gray_bytes, MALLOC_CAP_DMA);
         if (UNLIKELY(!gray_buf)) {
             fprintf(stderr, "do_update: failed to alloc 4-gray buffer\n");
-            return;
+            return false;
         }
     }
     uint8_t *plane_buf = heap_caps_malloc(frame_len, MALLOC_CAP_DMA);
@@ -1133,7 +1184,7 @@ static void do_update_descriptor_4gray(struct EpaperDriver *driver,
         free(gray_buf);
         free(plane_buf);
         free(line_buf);
-        return;
+        return false;
     }
 
     struct EPaperProgramRun run = {
@@ -1146,7 +1197,8 @@ static void do_update_descriptor_4gray(struct EpaperDriver *driver,
         .is_4gray = is_4gray
     };
 
-    if (!epaper_run_driver_program(driver, program, &run)) {
+    bool ok = epaper_run_driver_program(driver, program, &run);
+    if (!ok) {
         ESP_LOGW(TAG, "E-paper 4-gray refresh program failed for %s.",
             driver->desc->name);
     } else {
@@ -1156,13 +1208,14 @@ static void do_update_descriptor_4gray(struct EpaperDriver *driver,
     free(gray_buf);
     free(plane_buf);
     free(line_buf);
+    return ok;
 }
 
-static void do_update(Context *ctx, term display_list, term update_opts)
+static bool do_update(Context *ctx, term display_list, term update_opts)
 {
     struct EpaperDriver *driver = EPAPER_DRIVER_FROM_CTX(ctx);
     if (!epaper_wake_if_asleep(driver)) {
-        return;
+        return false;
     }
 
     if (driver->desc->controller == EPAPER_CONTROLLER_ACEP7) {
@@ -1176,7 +1229,7 @@ static void do_update(Context *ctx, term display_list, term update_opts)
     BaseDisplayItem *items = malloc(sizeof(BaseDisplayItem) * len);
     if (UNLIKELY(!items)) {
         fprintf(stderr, "do_update: failed to alloc items\n");
-        return;
+        return false;
     }
 
     term t = display_list;
@@ -1192,7 +1245,13 @@ static void do_update(Context *ctx, term display_list, term update_opts)
         if (mode_term != term_nil()) {
             enum EPaperRefreshMode parsed_mode;
             if (epaper_parse_refresh_mode(mode_term, ctx, &parsed_mode)) {
-                refresh_mode = parsed_mode;
+                if (epaper_refresh_mode_allowed(driver->desc, parsed_mode)) {
+                    refresh_mode = parsed_mode;
+                } else {
+                    ESP_LOGW(TAG,
+                        "Refresh mode is not declared for %s; using default.",
+                        driver->desc->name);
+                }
             } else {
                 ESP_LOGE(TAG, "Invalid refresh mode option specified in update.");
             }
@@ -1200,14 +1259,17 @@ static void do_update(Context *ctx, term display_list, term update_opts)
     }
 
     if (driver->desc->controller != EPAPER_CONTROLLER_ACEP7) {
+        bool ok;
         if (driver->desc->palette_size == 4) {
-            do_update_descriptor_4gray(driver, items, len, refresh_mode);
+            ok = do_update_descriptor_4gray(driver, items, len, refresh_mode);
         } else {
-            do_update_descriptor_mono(driver, items, len, refresh_mode);
+            ok = do_update_descriptor_mono(driver, items, len, refresh_mode);
         }
         display_items_delete(items, len);
-        update_last_refresh_ts(ctx);
-        return;
+        if (ok) {
+            update_last_refresh_ts(ctx);
+        }
+        return ok;
     }
 
     send_frame_preamble(driver);
@@ -1222,7 +1284,7 @@ static void do_update(Context *ctx, term display_list, term update_opts)
     if (UNLIKELY(!buf)) {
         fprintf(stderr, "do_update: failed to alloc buf\n");
         display_items_delete(items, len);
-        return;
+        return false;
     }
     memset(buf, 0x11, screen_width / 2);
 
@@ -1261,6 +1323,71 @@ static void do_update(Context *ctx, term display_list, term update_opts)
     display_items_delete(items, len);
 
     update_last_refresh_ts(ctx);
+    return true;
+}
+
+static term epaper_info_kv(Context *ctx, Heap *heap, AtomString key,
+    term value, term tail)
+{
+    term item = term_alloc_tuple(2, heap);
+    term_put_tuple_element(item, 0, context_make_atom(ctx, key));
+    term_put_tuple_element(item, 1, value);
+    return term_list_prepend(item, tail, heap);
+}
+
+static term epaper_refresh_modes_term(Context *ctx, Heap *heap,
+    const struct EPaperDesc *desc)
+{
+    term modes = term_nil();
+    for (int mode = EPAPER_REFRESH_MODE_COUNT - 1; mode >= 0; mode--) {
+        if (epaper_refresh_mode_allowed(desc, (enum EPaperRefreshMode) mode)) {
+            modes = term_list_prepend(
+                epaper_refresh_mode_atom(ctx, (enum EPaperRefreshMode) mode),
+                modes, heap);
+        }
+    }
+    return modes;
+}
+
+static term epaper_sleep_modes_term(Heap *heap, const struct EPaperDesc *desc)
+{
+    term modes = term_nil();
+    for (int i = desc->sleep_mode_count - 1; i >= 0; i--) {
+        modes = term_list_prepend(
+            term_from_atom_index((atom_index_t) desc->sleep_modes[i].atom_index),
+            modes, heap);
+    }
+    return modes;
+}
+
+static term epaper_build_info(Context *ctx, struct EpaperDriver *driver,
+    Heap *heap)
+{
+    const struct EPaperDesc *desc = driver->desc;
+    term info = term_nil();
+    info = epaper_info_kv(ctx, heap, ATOM_STR("\x6", "asleep"),
+        driver->state.asleep ? TRUE_ATOM : FALSE_ATOM, info);
+    info = epaper_info_kv(ctx, heap, ATOM_STR("\xB", "sleep_modes"),
+        epaper_sleep_modes_term(heap, desc), info);
+    info = epaper_info_kv(ctx, heap, ATOM_STR("\xF", "default_refresh"),
+        epaper_refresh_mode_atom(ctx, desc->default_refresh), info);
+    info = epaper_info_kv(ctx, heap, ATOM_STR("\xD", "refresh_modes"),
+        epaper_refresh_modes_term(ctx, heap, desc), info);
+    info = epaper_info_kv(ctx, heap, ATOM_STR("\xC", "palette_size"),
+        term_from_int(desc->palette_size), info);
+    info = epaper_info_kv(ctx, heap, ATOM_STR("\x8", "rotation"),
+        term_from_int(desc->rotation), info);
+    info = epaper_info_kv(ctx, heap, ATOM_STR("\xD", "native_height"),
+        term_from_int(desc->native_height), info);
+    info = epaper_info_kv(ctx, heap, ATOM_STR("\xC", "native_width"),
+        term_from_int(desc->native_width), info);
+    info = epaper_info_kv(ctx, heap, ATOM_STR("\x6", "height"),
+        term_from_int(desc->view_height), info);
+    info = epaper_info_kv(ctx, heap, ATOM_STR("\x5", "width"),
+        term_from_int(desc->view_width), info);
+    info = epaper_info_kv(ctx, heap, ATOM_STR("\xA", "controller"),
+        epaper_controller_atom(ctx, desc->controller), info);
+    return info;
 }
 
 static void process_message(Message *message, Context *ctx)
@@ -1278,10 +1405,12 @@ static void process_message(Message *message, Context *ctx)
     int req_arity = term_get_tuple_arity(req);
     term cmd = term_get_tuple_element(req, 0);
     term reply_status = OK_ATOM;
+    struct EpaperDriver *driver = EPAPER_DRIVER_FROM_CTX(ctx);
 
     if (cmd == context_make_atom(ctx, "\x6"
                                       "update")) {
 
+        bool update_ok = false;
         if (req_arity < 2) {
             ESP_LOGE(TAG, "Invalid update request: expected {update, Items} or {update, Items, Opts}.");
         } else {
@@ -1290,8 +1419,9 @@ static void process_message(Message *message, Context *ctx)
             if (req_arity >= 3) {
                 update_opts = term_get_tuple_element(req, 2);
             }
-            do_update(ctx, display_list, update_opts);
+            update_ok = do_update(ctx, display_list, update_opts);
         }
+        driver->state.last_op_ok = update_ok;
 
         // Reply already sent at enqueue time by
         // try_pre_ack_render_cmd in display_task.c. Sending another
@@ -1311,6 +1441,24 @@ static void process_message(Message *message, Context *ctx)
 
     } else if (cmd == context_make_atom(ctx, "\x4" "wake")) {
         reply_status = do_wake(ctx) ? OK_ATOM : ERROR_ATOM;
+
+    } else if (cmd == context_make_atom(ctx, "\x9" "wait_idle")) {
+        reply_status = driver->state.last_op_ok ? OK_ATOM : ERROR_ATOM;
+
+    } else if (cmd == context_make_atom(ctx, "\x4" "info")
+            || cmd == context_make_atom(ctx, "\xC" "capabilities")) {
+        BEGIN_WITH_STACK_HEAP(
+            TUPLE_SIZE(2) + REF_SIZE
+                + 11 * (TUPLE_SIZE(2) + CONS_SIZE)
+                + (EPAPER_REFRESH_MODE_COUNT + EPAPER_MAX_SLEEP_MODES) * CONS_SIZE
+                + 8,
+            heap);
+        term return_tuple = term_alloc_tuple(2, &heap);
+        term_put_tuple_element(return_tuple, 0, gen_message.ref);
+        term_put_tuple_element(return_tuple, 1, epaper_build_info(ctx, driver, &heap));
+        display_message_send(gen_message.pid, return_tuple, ctx->global);
+        END_WITH_STACK_HEAP(heap, ctx->global);
+        return;
 
     } else if (cmd == globalcontext_make_atom(ctx->global, "\xA" "load_image")) {
         handle_load_image(req, gen_message.ref, gen_message.pid, ctx);
@@ -1621,6 +1769,35 @@ static bool epaper_parse_refresh_mode(term val, Context *ctx, enum EPaperRefresh
     return false;
 }
 
+static bool epaper_parse_refresh_modes(term modes, Context *ctx, uint8_t *out)
+{
+    if (!term_is_nonempty_list(modes)) {
+        return false;
+    }
+
+    uint8_t mask = 0;
+    term t = modes;
+    while (term_is_nonempty_list(t)) {
+        enum EPaperRefreshMode mode;
+        if (!epaper_parse_refresh_mode(term_get_list_head(t), ctx, &mode)) {
+            return false;
+        }
+        uint8_t bit = epaper_refresh_mode_bit(mode);
+        if ((mask & bit) != 0) {
+            return false;
+        }
+        mask |= bit;
+        t = term_get_list_tail(t);
+    }
+
+    if (t != term_nil() || (mask & EPAPER_REFRESH_MODE_FULL) == 0) {
+        return false;
+    }
+
+    *out = mask;
+    return true;
+}
+
 static bool epaper_parse_controller_ram_policy(term val, Context *ctx,
     enum EPaperControllerRamPolicy *out)
 {
@@ -1720,10 +1897,17 @@ static bool epaper_parse_sleep_modes(struct EpaperDriver *driver,
             ESP_LOGE(TAG, "Invalid e-paper sleep mode name or properties.");
             return false;
         }
+        uint32_t mode_atom_index = (uint32_t) term_to_atom_index(mode_atom);
+        for (int i = 0; i < mode_count; i++) {
+            if (driver->term_desc.sleep_modes[i].atom_index == mode_atom_index) {
+                ESP_LOGE(TAG, "Duplicate e-paper sleep mode.");
+                return false;
+            }
+        }
 
         struct EPaperSleepMode *mode = &driver->term_desc.sleep_modes[mode_count];
         memset(mode, 0, sizeof(*mode));
-        mode->atom_index = (uint32_t) term_to_atom_index(mode_atom);
+        mode->atom_index = mode_atom_index;
         mode->wake_policy = EPAPER_WAKE_RESET_INIT;
         mode->controller_ram = EPAPER_CONTROLLER_RAM_UNKNOWN;
         mode->host_prev_frame = EPAPER_HOST_PREV_FRAME_INVALIDATE;
@@ -1796,6 +1980,52 @@ static bool epaper_parse_sleep_modes(struct EpaperDriver *driver,
     }
 
     driver->term_desc.sleep_mode_count = mode_count;
+    return true;
+}
+
+static bool epaper_validate_descriptor_refresh_modes(const struct EPaperDesc *desc)
+{
+    if ((desc->refresh_mode_mask & epaper_refresh_mode_bit(desc->default_refresh)) == 0) {
+        ESP_LOGE(TAG, "default_refresh is not listed in refresh_modes.");
+        return false;
+    }
+
+    if (desc->controller == EPAPER_CONTROLLER_ACEP7) {
+        if (desc->refresh_mode_mask != EPAPER_REFRESH_MODE_FULL) {
+            ESP_LOGE(TAG, "ACeP e-paper descriptors currently support only full refresh.");
+            return false;
+        }
+        return true;
+    }
+
+    for (int mode = 0; mode < EPAPER_REFRESH_MODE_COUNT; mode++) {
+        if (!epaper_refresh_mode_allowed(desc, (enum EPaperRefreshMode) mode)) {
+            continue;
+        }
+        const struct EPaperProgram *program;
+        switch ((enum EPaperRefreshMode) mode) {
+            case EPAPER_REFRESH_FULL:
+                program = &desc->program_full;
+                break;
+            case EPAPER_REFRESH_FAST:
+                program = &desc->program_fast;
+                break;
+            case EPAPER_REFRESH_PARTIAL:
+                program = &desc->program_partial;
+                break;
+            case EPAPER_REFRESH_4GRAY:
+                program = &desc->program_4gray;
+                break;
+            default:
+                program = NULL;
+                break;
+        }
+        if (program->bytes == NULL) {
+            ESP_LOGE(TAG, "refresh_modes declares a mode without a program.");
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -1976,6 +2206,16 @@ static bool epaper_parse_descriptor_override(struct EpaperDriver *driver,
         driver->term_desc.layout.polarity = polarity;
     }
 
+    // Parse Refresh Modes
+    term refresh_modes_term = interop_kv_get_value_default(
+        descriptor, ATOM_STR("\xD", "refresh_modes"), term_nil(), ctx->global);
+    if (refresh_modes_term == term_nil()
+        || !epaper_parse_refresh_modes(refresh_modes_term, ctx,
+            &driver->term_desc.refresh_mode_mask)) {
+        ESP_LOGE(TAG, "Invalid refresh_modes in descriptor.");
+        return false;
+    }
+
     // Parse Default Refresh
     term default_refresh_term = interop_kv_get_value_default(descriptor, ATOM_STR("\xF", "default_refresh"), term_nil(), ctx->global);
     if (default_refresh_term != term_nil()) {
@@ -1985,6 +2225,11 @@ static bool epaper_parse_descriptor_override(struct EpaperDriver *driver,
             return false;
         }
         driver->term_desc.default_refresh = default_refresh;
+    }
+    if (!epaper_refresh_mode_allowed(&driver->term_desc,
+            driver->term_desc.default_refresh)) {
+        ESP_LOGE(TAG, "default_refresh is not listed in refresh_modes.");
+        return false;
     }
 
     // Parse Programs Map
@@ -2008,6 +2253,10 @@ static bool epaper_parse_descriptor_override(struct EpaperDriver *driver,
             ESP_LOGE(TAG, "Invalid e-paper descriptor program binary.");
             return false;
         }
+    }
+
+    if (!epaper_validate_descriptor_refresh_modes(&driver->term_desc)) {
+        return false;
     }
 
     if (!epaper_parse_sleep_modes(driver, descriptor, ctx)) {
@@ -2205,6 +2454,7 @@ static void display_spi_init(Context *ctx, term opts)
     driver->state.prev_valid = false;
     driver->state.fast_refresh_count = 0;
     driver->state.needs_reseed = false;
+    driver->state.last_op_ok = true;
     driver->state.asleep = false;
     driver->state.asleep_mode = NULL;
     epaper_clear_after_wake_policy(driver);

@@ -453,6 +453,28 @@ When sending updates via the port, you can dynamically choose the refresh mode p
 
 If the requested refresh mode is not listed in the descriptor's `refresh_modes`, the driver defaults back to `default_refresh`. Only modes defined and present in the descriptor are permitted.
 
+For slow displays, use `wait_idle` after an asynchronous `update` when the caller needs a queue barrier. It returns after earlier retained display messages have been processed, with `:ok` when the most recent executed update completed successfully and `:error` if the driver detected a failure.
+
+```elixir
+:port.call(display, {:update, items, [refresh: :partial]}, 5000)
+:port.call(display, {:wait_idle}, 30_000)
+```
+
+The e-paper port also exposes descriptor capabilities at runtime:
+
+```elixir
+:port.call(display, {:info}, 5000)
+# [
+#   controller: :ssd16xx,
+#   width: 296,
+#   height: 128,
+#   refresh_modes: [:full, :fast, :partial, :"4gray"],
+#   default_refresh: :full,
+#   sleep_modes: [:sleep, :deep_sleep],
+#   asleep: false
+# ]
+```
+
 #### Low Power Sleep
 
 Descriptors can expose up to 8 unique named low-power modes under `sleep_modes`. The built-in names are:
