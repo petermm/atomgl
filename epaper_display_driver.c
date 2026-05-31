@@ -38,6 +38,7 @@
 #include <interop.h>
 #include <mailbox.h>
 #include <port.h>
+#include <scheduler.h>
 #include <term.h>
 
 #include <esp32_sys.h>
@@ -67,6 +68,7 @@ static const char *TAG = "epaper_display_driver";
 #define UC8276_LUT_PAYLOAD_LEN 227
 #define UC8276_LUT_WITH_REGS_LEN 233
 #define EPAPER_TERM_PROGRAM_COUNT 5
+#define EPAPER_MAX_SPI_CLOCK_HZ 80000000
 
 struct EPaperState
 {
@@ -130,7 +132,7 @@ static const struct EPaperDesc epaper_desc_term_default = {
     .rotation = 0,
     .spi_clock_hz = 4000000,
     .palette = NULL,
-    .palette_size = 0,
+    .palette_size = 2,
     .controller = EPAPER_CONTROLLER_SSD16XX,
     .layout = {
         .byte_order = EPAPER_BYTE_ORDER_ROW_MAJOR,
@@ -141,6 +143,13 @@ static const struct EPaperDesc epaper_desc_term_default = {
     .busy_idle_level = 0,
     .refresh_mode_mask = EPAPER_REFRESH_MODE_FULL,
     .descriptor_version = 3,
+    .full_expected_ms = 2000,
+    .fast_expected_ms = 500,
+    .poll_interval_ms = 50,
+    .timeout_ms = 5000,
+    .max_fast_refreshes = 10,
+    .reseed_on_timeout = true,
+    .default_refresh = EPAPER_REFRESH_FULL,
 };
 
 static bool epaper_desc_requires_program(const struct EPaperDesc *desc)
@@ -272,7 +281,9 @@ static bool epaper_write_lut_bytes(struct EpaperDriver *driver,
     }
 
     spi_dc_write_cmd_data(&driver->bus, 0x32, lut, SSD1680_LUT_PAYLOAD_LEN);
-    wait_busy_low_timeout(driver);
+    if (!wait_busy_low_timeout(driver)) {
+        return false;
+    }
 
     if (lut_len < SSD1680_LUT_WITH_REGS_LEN) {
         return true;
@@ -331,13 +342,14 @@ static void maybe_refresh(Context *ctx)
     }
 }
 
-static void send_frame_preamble(struct EpaperDriver *driver)
+static bool send_frame_preamble(struct EpaperDriver *driver)
 {
     if (driver->desc->frame_preamble_seq != NULL) {
-        epaper_execute_init_seq(&driver->bus, driver->busy_gpio,
+        return epaper_execute_init_seq(&driver->bus, driver->busy_gpio,
             driver->desc->frame_preamble_seq,
             driver->desc->frame_preamble_seq_len, false);
     }
+    return true;
 }
 
 static void send_post_frame_refresh(struct EpaperDriver *driver)
@@ -855,10 +867,9 @@ static bool epaper_run_init_sequence(struct EpaperDriver *driver, bool reset_fir
         return epaper_run_driver_program(driver, &driver->desc->init, NULL);
     }
     if (driver->desc->init_seq != NULL) {
-        epaper_execute_init_seq(&driver->bus, driver->busy_gpio,
+        return epaper_execute_init_seq(&driver->bus, driver->busy_gpio,
             driver->desc->init_seq, driver->desc->init_seq_len,
             driver->desc->init_wait_busy_between_cmds);
-        return true;
     }
 
     if (!reset_first) {
@@ -1272,7 +1283,10 @@ static bool do_update(Context *ctx, term display_list, term update_opts)
         return ok;
     }
 
-    send_frame_preamble(driver);
+    if (!send_frame_preamble(driver)) {
+        display_items_delete(items, len);
+        return false;
+    }
 
     // DTM — data transfer to panel memory.
     spi_dc_write_command(&driver->bus, 0x10);
@@ -1492,7 +1506,9 @@ static void clear_screen_internal(Context *ctx, int color,
     int screen_width = driver->screen.w;
     int screen_height = driver->screen.h;
 
-    send_frame_preamble(driver);
+    if (!send_frame_preamble(driver)) {
+        return;
+    }
 
     spi_dc_write_command(&driver->bus, 0x10);
 
@@ -1595,6 +1611,9 @@ static bool epaper_copy_binary_field(term container, Context *ctx,
     }
 
     size_t value_len = term_binary_size(value);
+    if (value_len > EPAPER_MAX_DESCRIPTOR_BINARY_LEN) {
+        return false;
+    }
     uint8_t *copy = malloc(value_len == 0 ? 1 : value_len);
     if (copy == NULL) {
         return false;
@@ -1615,6 +1634,9 @@ static bool epaper_copy_binary_term(term value,
     }
 
     size_t value_len = term_binary_size(value);
+    if (value_len > EPAPER_MAX_DESCRIPTOR_BINARY_LEN) {
+        return false;
+    }
     uint8_t *copy = malloc(value_len == 0 ? 1 : value_len);
     if (copy == NULL) {
         return false;
@@ -2029,6 +2051,41 @@ static bool epaper_validate_descriptor_refresh_modes(const struct EPaperDesc *de
     return true;
 }
 
+static bool epaper_validate_descriptor_programs(const struct EPaperDesc *desc)
+{
+    if (!epaper_validate_program(&desc->init, false)
+        || !epaper_validate_program(&desc->program_full, true)
+        || !epaper_validate_program(&desc->program_fast, true)
+        || !epaper_validate_program(&desc->program_partial, true)
+        || !epaper_validate_program(&desc->program_4gray, true)) {
+        ESP_LOGE(TAG, "Invalid e-paper descriptor bytecode program.");
+        return false;
+    }
+
+    for (int i = 0; i < desc->sleep_mode_count; i++) {
+        const struct EPaperSleepMode *mode = &desc->sleep_modes[i];
+        if (!epaper_validate_program(&mode->enter, false)
+            || (mode->wake_policy == EPAPER_WAKE_PROGRAM
+                && !epaper_validate_program(&mode->wake, false))) {
+            ESP_LOGE(TAG, "Invalid e-paper sleep mode bytecode program.");
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static bool epaper_validate_descriptor_sequences(const struct EPaperDesc *desc)
+{
+    if (!epaper_validate_init_seq(desc->init_seq, desc->init_seq_len)
+        || !epaper_validate_init_seq(desc->frame_preamble_seq,
+            desc->frame_preamble_seq_len)) {
+        ESP_LOGE(TAG, "Invalid e-paper ACeP raw command sequence.");
+        return false;
+    }
+    return true;
+}
+
 static bool epaper_validate_descriptor_geometry(const struct EPaperDesc *desc)
 {
     if (desc->native_width <= 0 || desc->native_height <= 0
@@ -2036,6 +2093,13 @@ static bool epaper_validate_descriptor_geometry(const struct EPaperDesc *desc)
         ESP_LOGE(TAG, "Invalid e-paper geometry: native=%dx%d view=%dx%d.",
             desc->native_width, desc->native_height,
             desc->view_width, desc->view_height);
+        return false;
+    }
+
+    if (desc->controller == EPAPER_CONTROLLER_ACEP7
+        && ((desc->native_width & 1) != 0 || (desc->view_width & 1) != 0)) {
+        ESP_LOGE(TAG, "ACeP e-paper width must be even: native=%d view=%d.",
+            desc->native_width, desc->view_width);
         return false;
     }
 
@@ -2075,6 +2139,91 @@ static bool epaper_validate_descriptor_geometry(const struct EPaperDesc *desc)
         desc->rotation, desc->native_width, desc->native_height,
         desc->view_width, desc->view_height);
     return false;
+}
+
+static bool epaper_validate_descriptor_layout(const struct EPaperDesc *desc)
+{
+    switch (desc->controller) {
+        case EPAPER_CONTROLLER_JD79656:
+            return desc->layout.byte_order == EPAPER_BYTE_ORDER_COLUMN_MAJOR;
+        case EPAPER_CONTROLLER_SSD16XX:
+        case EPAPER_CONTROLLER_UC8151:
+        case EPAPER_CONTROLLER_UC8276:
+        case EPAPER_CONTROLLER_UC8175:
+            return desc->layout.byte_order == EPAPER_BYTE_ORDER_ROW_MAJOR;
+        case EPAPER_CONTROLLER_ACEP7:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool epaper_validate_descriptor_semantics(const struct EPaperDesc *desc)
+{
+    if (!epaper_validate_descriptor_geometry(desc)
+        || !epaper_validate_descriptor_refresh_modes(desc)
+        || !epaper_validate_descriptor_programs(desc)
+        || !epaper_validate_descriptor_sequences(desc)) {
+        return false;
+    }
+
+    if (!epaper_validate_descriptor_layout(desc)) {
+        ESP_LOGE(TAG, "Invalid frame_layout for e-paper controller.");
+        return false;
+    }
+    if (desc->spi_clock_hz <= 0 || desc->spi_clock_hz > EPAPER_MAX_SPI_CLOCK_HZ) {
+        ESP_LOGE(TAG, "Invalid e-paper spi_clock_hz: %d.", desc->spi_clock_hz);
+        return false;
+    }
+    if ((desc->busy_idle_level != 0 && desc->busy_idle_level != 1)
+        || (desc->post_power_off_busy_level != 0
+            && desc->post_power_off_busy_level != 1)) {
+        ESP_LOGE(TAG, "Invalid e-paper BUSY level in descriptor.");
+        return false;
+    }
+    if (desc->palette_size != 2 && desc->palette_size != 4
+        && desc->palette_size != 7) {
+        ESP_LOGE(TAG, "Invalid e-paper palette_size: %d.", desc->palette_size);
+        return false;
+    }
+    if (desc->controller == EPAPER_CONTROLLER_ACEP7) {
+        if (desc->palette == NULL || desc->palette_size != 7) {
+            ESP_LOGE(TAG, "ACeP e-paper descriptor requires a known 7-color palette.");
+            return false;
+        }
+        if (desc->init.bytes == NULL && desc->init_seq == NULL) {
+            ESP_LOGE(TAG, "ACeP e-paper descriptor requires an init program or init_seq.");
+            return false;
+        }
+    } else {
+        if (desc->init.bytes == NULL) {
+            ESP_LOGE(TAG, "E-paper descriptor requires an init program.");
+            return false;
+        }
+        if (desc->palette_size == 7) {
+            ESP_LOGE(TAG, "7-color palette_size is only valid for ACeP descriptors.");
+            return false;
+        }
+        if (desc->palette_size == 4
+            && desc->controller != EPAPER_CONTROLLER_SSD16XX
+            && desc->controller != EPAPER_CONTROLLER_UC8276) {
+            ESP_LOGE(TAG, "4-gray palette_size is not supported by this controller.");
+            return false;
+        }
+    }
+    if (epaper_refresh_mode_allowed(desc, EPAPER_REFRESH_4GRAY)
+        && desc->palette_size != 4) {
+        ESP_LOGE(TAG, "4gray refresh mode requires palette_size 4.");
+        return false;
+    }
+    if (desc->full_expected_ms < 0 || desc->fast_expected_ms < 0
+        || desc->poll_interval_ms <= 0 || desc->timeout_ms <= 0
+        || desc->max_fast_refreshes < 0
+        || desc->periodic_refresh_interval < 0) {
+        ESP_LOGE(TAG, "Invalid e-paper timing or ghosting value.");
+        return false;
+    }
+    return true;
 }
 
 static bool epaper_parse_descriptor_override(struct EpaperDriver *driver,
@@ -2255,10 +2404,6 @@ static bool epaper_parse_descriptor_override(struct EpaperDriver *driver,
         }
     }
 
-    if (!epaper_validate_descriptor_refresh_modes(&driver->term_desc)) {
-        return false;
-    }
-
     if (!epaper_parse_sleep_modes(driver, descriptor, ctx)) {
         return false;
     }
@@ -2346,18 +2491,7 @@ static bool epaper_parse_descriptor_override(struct EpaperDriver *driver,
         && driver->term_desc.palette_size == 4) {
         driver->term_desc.palette = epaper_ssd1680_4gray_palette;
     }
-    if (driver->term_desc.controller == EPAPER_CONTROLLER_ACEP7 && driver->term_desc.palette == NULL) {
-        ESP_LOGE(TAG, "ACeP e-paper descriptor requires a known color palette.");
-        return false;
-    }
-    if (driver->term_desc.controller == EPAPER_CONTROLLER_ACEP7
-        && driver->term_desc.init.bytes == NULL
-        && driver->term_desc.init_seq == NULL) {
-        ESP_LOGE(TAG, "ACeP e-paper descriptor requires an init program or init_seq.");
-        return false;
-    }
-
-    if (!epaper_validate_descriptor_geometry(&driver->term_desc)) {
+    if (!epaper_validate_descriptor_semantics(&driver->term_desc)) {
         return false;
     }
 
@@ -2366,14 +2500,14 @@ static bool epaper_parse_descriptor_override(struct EpaperDriver *driver,
     return true;
 }
 
-static void display_spi_init(Context *ctx, term opts)
+static bool display_spi_init(Context *ctx, term opts)
 {
     term descriptor_term = interop_kv_get_value_default(
         opts, ATOM_STR("\xA", "descriptor"), term_nil(), ctx->global);
 
     if (descriptor_term == term_nil()) {
         ESP_LOGE(TAG, "Failed init: missing e-paper descriptor.");
-        return;
+        return false;
     }
 
     const struct EPaperDesc *desc = &epaper_desc_term_default;
@@ -2381,7 +2515,7 @@ static void display_spi_init(Context *ctx, term opts)
     struct EpaperDriver *driver = calloc(1, sizeof(struct EpaperDriver));
     if (UNLIKELY(!driver)) {
         ESP_LOGE(TAG, "Failed init: unable to allocate driver state.");
-        return;
+        return false;
     }
 
     driver->desc = desc;
@@ -2389,20 +2523,20 @@ static void display_spi_init(Context *ctx, term opts)
     if (!epaper_parse_descriptor_override(driver, opts, ctx)) {
         ESP_LOGE(TAG, "Failed init: invalid descriptor override.");
         epaper_free_init_failed_driver(driver, false);
-        return;
+        return false;
     }
     desc = driver->desc;
     if (!epaper_validate_descriptor_geometry(desc)) {
         ESP_LOGE(TAG, "Failed init: invalid descriptor geometry for '%s'.", desc->name);
         epaper_free_init_failed_driver(driver, false);
-        return;
+        return false;
     }
     if (epaper_desc_requires_program(desc) && desc->program_full.bytes == NULL) {
         ESP_LOGE(TAG,
             "Failed init: e-paper descriptor '%s' requires a full refresh program.",
             desc->name);
         epaper_free_init_failed_driver(driver, false);
-        return;
+        return false;
     }
 
     driver->screen.w = desc->view_width;
@@ -2415,7 +2549,7 @@ static void display_spi_init(Context *ctx, term opts)
     if (driver->display_args.messages_queue == NULL) {
         ESP_LOGE(TAG, "Failed init: unable to allocate display queue.");
         epaper_free_init_failed_driver(driver, false);
-        return;
+        return false;
     }
     driver->display_args.process_message_fn = process_message;
     driver->display_args.ctx = ctx;
@@ -2427,7 +2561,7 @@ static void display_spi_init(Context *ctx, term opts)
     if (!spi_display_parse_config(&spi_config, opts, ctx->global)) {
         ESP_LOGE(TAG, "Failed init: invalid SPI display configuration.");
         epaper_free_init_failed_driver(driver, false);
-        return;
+        return false;
     }
     spi_display_init(&driver->bus.spi_disp, &spi_config);
     bool spi_device_added = true;
@@ -2438,7 +2572,7 @@ static void display_spi_init(Context *ctx, term opts)
     if (UNLIKELY(!ok)) {
         ESP_LOGE(TAG, "Failed init: invalid display GPIOs.");
         epaper_free_init_failed_driver(driver, spi_device_added);
-        return;
+        return false;
     }
 
     gpio_set_direction(driver->reset_gpio, GPIO_MODE_OUTPUT);
@@ -2468,15 +2602,22 @@ static void display_spi_init(Context *ctx, term opts)
         display_init_using_list(driver, init_list);
     } else if (desc->init.bytes != NULL) {
         if (!epaper_run_driver_program(driver, &desc->init, NULL)) {
-            ESP_LOGW(TAG, "E-paper descriptor init program failed for %s.",
+            ESP_LOGE(TAG, "E-paper descriptor init program failed for %s.",
                 desc->name);
+            epaper_free_init_failed_driver(driver, spi_device_added);
+            return false;
         }
     } else if (desc->init_seq != NULL) {
         display_reset(driver);
         wait_busy_level(driver, desc->busy_idle_level);
-        epaper_execute_init_seq(&driver->bus, driver->busy_gpio,
-            desc->init_seq, desc->init_seq_len,
-            desc->init_wait_busy_between_cmds);
+        if (!epaper_execute_init_seq(&driver->bus, driver->busy_gpio,
+                desc->init_seq, desc->init_seq_len,
+                desc->init_wait_busy_between_cmds)) {
+            ESP_LOGE(TAG, "E-paper descriptor init_seq failed for %s.",
+                desc->name);
+            epaper_free_init_failed_driver(driver, spi_device_added);
+            return false;
+        }
     }
 
     update_last_refresh_ts(ctx);
@@ -2497,16 +2638,24 @@ static void display_spi_init(Context *ctx, term opts)
             &driver->display_args, 1, NULL) != pdPASS) {
         ESP_LOGE(TAG, "Failed init: unable to start display task.");
         epaper_free_init_failed_driver(driver, spi_device_added);
-        return;
+        return false;
     }
 #endif
+
+    return true;
 }
 
 Context *epaper_display_create_port(GlobalContext *global, term opts)
 {
     Context *ctx = context_new(global);
+    if (ctx == NULL) {
+        return NULL;
+    }
     ctx->native_handler = display_task_consume_mailbox;
-    display_spi_init(ctx, opts);
+    if (!display_spi_init(ctx, opts)) {
+        scheduler_terminate(ctx);
+        return NULL;
+    }
     return ctx;
 }
 

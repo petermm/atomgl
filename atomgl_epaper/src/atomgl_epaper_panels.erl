@@ -17,9 +17,12 @@
 
 -import(atomgl_epaper_program, [
     program/1,
+    init_seq/1,
     cmd/1,
     cmd/2,
-    cmd_delay/3,
+    init_cmd/1,
+    init_cmd/2,
+    init_cmd_delay/3,
     wait_busy/2,
     reset/3,
     insert_plane/1,
@@ -184,8 +187,8 @@ panel("good-display/gdep073e01", Opts) ->
         periodic_refresh_interval => 0,
         sleep_modes => acep7_sleep_modes(1, <<16#00>>)
     }, Opts));
-panel(_, _Opts) ->
-    error.
+panel(Compatible, _Opts) ->
+    {error, {unsupported_panel, Compatible}}.
 
 ssd16xx_sleep_modes(DelayMs) ->
     [
@@ -508,42 +511,42 @@ heltec_lcmen2r13efc1_refresh() ->
 %% SPDX-SnippetEnd
 
 acep7c_init_seq() ->
-    program([
-        cmd(16#00, <<16#EF, 16#08>>),
-        cmd(16#01, <<16#37, 16#00, 16#23, 16#23>>),
-        cmd(16#03, <<16#00>>),
-        cmd(16#06, <<16#C7, 16#C7, 16#1D>>),
-        cmd(16#30, <<16#3C>>),
-        cmd(16#40, <<16#00>>),
-        cmd(16#50, <<16#3F>>),
-        cmd(16#60, <<16#22>>),
-        cmd(16#61, <<16#02, 16#58, 16#01, 16#C0>>),
-        cmd(16#E3, <<16#AA>>),
-        cmd_delay(16#82, <<16#80>>, 100),
-        cmd(16#50, <<16#37>>)
+    init_seq([
+        init_cmd(16#00, <<16#EF, 16#08>>),
+        init_cmd(16#01, <<16#37, 16#00, 16#23, 16#23>>),
+        init_cmd(16#03, <<16#00>>),
+        init_cmd(16#06, <<16#C7, 16#C7, 16#1D>>),
+        init_cmd(16#30, <<16#3C>>),
+        init_cmd(16#40, <<16#00>>),
+        init_cmd(16#50, <<16#3F>>),
+        init_cmd(16#60, <<16#22>>),
+        init_cmd(16#61, <<16#02, 16#58, 16#01, 16#C0>>),
+        init_cmd(16#E3, <<16#AA>>),
+        init_cmd_delay(16#82, <<16#80>>, 100),
+        init_cmd(16#50, <<16#37>>)
     ]).
 
 acep7c_frame_preamble_seq() ->
-    program([
-        cmd(16#61, <<16#02, 16#58, 16#01, 16#C0>>)
+    init_seq([
+        init_cmd(16#61, <<16#02, 16#58, 16#01, 16#C0>>)
     ]).
 
 gdep073e01_init_seq() ->
-    program([
-        cmd(16#AA, <<16#49, 16#55, 16#20, 16#08, 16#09, 16#18>>),
-        cmd(16#01, <<16#3F>>),
-        cmd(16#00, <<16#5F, 16#69>>),
-        cmd(16#03, <<16#00, 16#54, 16#00, 16#44>>),
-        cmd(16#05, <<16#40, 16#1F, 16#1F, 16#2C>>),
-        cmd(16#06, <<16#6F, 16#1F, 16#17, 16#49>>),
-        cmd(16#08, <<16#6F, 16#1F, 16#1F, 16#22>>),
-        cmd(16#30, <<16#00>>),
-        cmd(16#50, <<16#3F>>),
-        cmd(16#60, <<16#02, 16#00>>),
-        cmd(16#61, <<16#03, 16#20, 16#01, 16#E0>>),
-        cmd(16#84, <<16#01>>),
-        cmd(16#E3, <<16#2F>>),
-        cmd(16#04)
+    init_seq([
+        init_cmd(16#AA, <<16#49, 16#55, 16#20, 16#08, 16#09, 16#18>>),
+        init_cmd(16#01, <<16#3F>>),
+        init_cmd(16#00, <<16#5F, 16#69>>),
+        init_cmd(16#03, <<16#00, 16#54, 16#00, 16#44>>),
+        init_cmd(16#05, <<16#40, 16#1F, 16#1F, 16#2C>>),
+        init_cmd(16#06, <<16#6F, 16#1F, 16#17, 16#49>>),
+        init_cmd(16#08, <<16#6F, 16#1F, 16#1F, 16#22>>),
+        init_cmd(16#30, <<16#00>>),
+        init_cmd(16#50, <<16#3F>>),
+        init_cmd(16#60, <<16#02, 16#00>>),
+        init_cmd(16#61, <<16#03, 16#20, 16#01, 16#E0>>),
+        init_cmd(16#84, <<16#01>>),
+        init_cmd(16#E3, <<16#2F>>),
+        init_cmd(16#04)
     ]).
 
 epd2in9_v2_init(BorderWaveform) ->

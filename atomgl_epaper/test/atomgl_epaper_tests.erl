@@ -41,6 +41,19 @@ orientation_geometry_test_() ->
             ?assertEqual(128, get_value(view_width, Desc)),
             ?assertEqual(296, get_value(view_height, Desc)),
             ?assertEqual(180, get_value(rotation, Desc))
+        end),
+        ?_test(begin
+            {ok, Desc} = panel("waveshare,epd2in9_V2", #{rotation => 0}),
+            ?assertEqual(128, get_value(view_width, Desc)),
+            ?assertEqual(296, get_value(view_height, Desc)),
+            ?assertEqual(0, get_value(rotation, Desc))
+        end),
+        ?_test(begin
+            {ok, Desc} = panel("waveshare,epd2in9_V2",
+                #{rotation => 0, view_width => 128, view_height => 296}),
+            ?assertEqual(128, get_value(view_width, Desc)),
+            ?assertEqual(296, get_value(view_height, Desc)),
+            ?assertEqual(0, get_value(rotation, Desc))
         end)
     ].
 
@@ -74,7 +87,7 @@ invalid_rotated_view_geometry_test() ->
         {default_refresh, full},
         {programs, [{init, <<>>}, {full, <<>>}]}
     ],
-    ?assertError({badmatch, false}, validate_descriptor(Desc)).
+    ?assertError({bad_field, view_width, bad_geometry}, validate_descriptor(Desc)).
 
 invalid_refresh_modes_descriptor_test_() ->
     BaseDesc = [
@@ -86,23 +99,37 @@ invalid_refresh_modes_descriptor_test_() ->
         {view_height, 296},
         {rotation, 0},
         {frame_layout, row_msb},
+        {polarity, white_1},
+        {spi_clock_hz, 4000000},
+        {busy_idle_level, 0},
+        {use_gpio_pullups, false},
+        {palette_size, 2},
         {default_refresh, full},
-        {programs, [{init, <<>>}, {full, <<>>}, {partial, <<>>}]}
+        {programs, [{init, <<>>}, {full, <<>>}, {partial, <<>>}]},
+        {timing, []},
+        {ghosting, []}
     ],
     [
         ?_test(begin
-            ?assertError({badmatch, false},
+            ?assertError({bad_field, refresh_modes, duplicate},
                 validate_descriptor([{refresh_modes, [full, partial, partial]} | BaseDesc]))
         end),
         ?_test(begin
-            ?assertError({badmatch, false},
+            ?assertError({bad_field, refresh_modes, missing_full},
                 validate_descriptor([{refresh_modes, [partial]} | BaseDesc]))
         end),
         ?_test(begin
-            ?assertError({badmatch, false},
+            ?assertError({bad_field, refresh_modes, {expected_one_of, [full, fast, partial, '4gray']}},
                 validate_descriptor([{refresh_modes, [full, turbo]} | BaseDesc]))
         end)
     ].
+
+timing_options_test() ->
+    {ok, Desc} = panel("waveshare,epd2in9_V2",
+        #{timing => #{timeout_ms => 1234, poll_interval_ms => 25}}),
+    Timing = get_value(timing, Desc),
+    ?assertEqual(1234, get_value(timeout_ms, Timing)),
+    ?assertEqual(25, get_value(poll_interval_ms, Timing)).
 
 uc8151_panel_descriptor_test_() ->
     [
@@ -183,7 +210,7 @@ sleep_modes_descriptor_test_() ->
         ?_test(begin
             CustomModes = [
                 {lab, [
-                    {enter, <<1, 2, 3>>},
+                    {enter, <<1, 2, 2, 3>>},
                     {wake, init},
                     {controller_ram, unknown},
                     {host_prev_frame, invalidate},
@@ -198,7 +225,7 @@ sleep_modes_descriptor_test_() ->
                 {sleep, [{enter, <<1>>}]},
                 {sleep, [{enter, <<2>>}]}
             ],
-            ?assertError({badmatch, false},
+            ?assertError({bad_field, sleep_modes, duplicate},
                 panel("waveshare,epd2in9_V2", #{sleep_modes => DuplicateModes}))
         end),
         ?_test(begin
@@ -213,7 +240,7 @@ sleep_modes_descriptor_test_() ->
                 {mode8, [{enter, <<8>>}]},
                 {mode9, [{enter, <<9>>}]}
             ],
-            ?assertError({badmatch, false},
+            ?assertError({bad_field, sleep_modes, too_many},
                 panel("waveshare,epd2in9_V2", #{sleep_modes => TooManyModes}))
         end)
     ].
@@ -243,8 +270,20 @@ acep7_panel_descriptor_test_() ->
             ?assertEqual(1, get_value(post_power_off_busy_level, Desc))
         end),
         ?_test(begin
-            ?assertError({badmatch, false},
+            ?assertError({bad_field, rotation, acep7_native_orientation_only},
                 panel("waveshare,5in65-acep-7c",
                       #{rotation => 90, view_width => 448, view_height => 600}))
+        end),
+        ?_test(begin
+            ?assertError({bad_field, init_seq, truncated_record},
+                panel("waveshare,5in65-acep-7c", #{init_seq => <<0>>}))
+        end),
+        ?_test(begin
+            ?assertError({bad_field, native_width, acep7_width_must_be_even},
+                panel("waveshare,5in65-acep-7c", #{native_width => 601}))
         end)
     ].
+
+unknown_panel_test() ->
+    ?assertEqual({error, {unsupported_panel, "missing,panel"}},
+        panel("missing,panel")).
